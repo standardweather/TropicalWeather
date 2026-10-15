@@ -374,8 +374,9 @@
   function tabForecast(s) {
     const pts = (state.nhc[s.bin]?.points?.features || []).map((f) => f.properties).sort((a, b) => a.tau - b.tau);
     const rc = stormRecon(s);
-    let html = "";
+    let html = intensityChart(s);
     if (pts.length) {
+      html += `<h5 class="sub">NHC forecast</h5>`;
       html += `<table class="fc"><thead><tr><th>Valid</th><th>Wind</th><th>Stage</th></tr></thead><tbody>${pts.map((p) => `<tr>
         <td>${p.tau === 0 ? "Now" : `${p.tau} h`} <span class="dim">${esc(String(p.validtime || "").replace("/", " "))}Z</span></td>
         <td>${p.maxwind} kt</td>
@@ -388,7 +389,6 @@
     } else {
       html += `<p class="note">Forecast points are loading from NHC.</p>`;
     }
-    html += intensityChart(s);
     const v = rc.vortex[0];
     if (v) html += `<p class="note"><b>Recon</b> ${dayZ(v.t)} fix: ${esc(v.slpNote.toLowerCase())}${v.maxFl ? `, ${v.maxFl} kt flight-level` : ""}${v.eye ? `, eye ${esc(v.eye.toLowerCase())}` : ""}.</p>`;
     if (rc.flights.length) html += `<p class="note"><b>Tasked</b> ${rc.flights.map((f) => `${esc(f.aircraft)}, ${esc((f.fields.profile || "mission").toLowerCase())} at ${esc(f.fields.fixTime || "")}`).join("; ")}.</p>`;
@@ -458,7 +458,7 @@
       const tab = TABS.find(([k]) => k === state.tab) || TABS[0];
       const body = open
         ? `<div class="detail"><div class="tabs" role="tablist">${TABS.map(([k, t]) => `<button role="tab" data-tab="${k}" aria-selected="${k === tab[0]}">${t}</button>`).join("")}</div>${tab[2](s)}</div>`
-        : `<div class="detail">${intensityChart(s, 120)}</div>`;
+        : "";
       return `<div class="sys${open ? " sel" : ""}">${head}${body}</div>`;
     }).join("");
     html += areas.map((a) => `<div class="sys"><button class="sys__row" data-area="${a.id}">
@@ -516,6 +516,7 @@
     state.selected = id;
     history.replaceState(null, "", id ? `#${id}` : location.pathname + location.search);
     renderList();
+    if (id) document.querySelector(".sys.sel")?.scrollIntoView({ block: "nearest" });
     drawStorms();
     drawModels();
     if (fly) fitView();
