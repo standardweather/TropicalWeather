@@ -1,7 +1,7 @@
-/* TropicalWeather — live tropical map for standardweather.github.io.
+/* TropicalWeather — live tropical console for standardweather.github.io.
  *
  * Live in the browser (these services allow cross-origin requests):
- *   NHC tropical MapServer  cones, forecast/past tracks, watches & warnings, wind radii, 7-day outlook areas
+ *   NHC tropical MapServer  cones, forecast/past tracks, watches & warnings, wind field, 7-day outlook areas
  *   NASA GIBS GOES tiles    IR / visible / GeoColor / air mass, 10-minute full-disk frames
  * Collected every ~15 min by GitHub Actions into data/tropical.json (fetch_data.py):
  *   NHC CurrentStorms, ATCF best tracks + guidance, TCPOD, recon HDOBs + vortex messages, outlook text
@@ -10,8 +10,6 @@
   "use strict";
 
   const MS = "https://mapservices.weather.noaa.gov/tropical/rest/services/tropical/NHC_tropical_weather/MapServer";
-  // NASA GIBS full-disk GOES-East and GOES-West, stitched at 105°W. 10-minute frames,
-  // usually 15–30 minutes behind real time.
   const GIBS = "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best";
   const SAT = {
     ir: { name: "IR", product: "ABI_Band13_Clean_Infrared", level: 6 },
@@ -19,37 +17,37 @@
     geocolor: { name: "GeoColor", product: "ABI_GeoColor", level: 7 },
     airmass: { name: "Air mass", product: "ABI_Air_Mass", level: 6 },
   };
-  const SAT_SPLIT_LON = -105;
+  const SAT_SPLIT_LON = -105;      // GOES-West to the west, GOES-East to the east
   const SAT_FRAMES = 12;           // 2 hours of 10-minute frames
-  const SAT_STEP_MIN = 10;
+  const SAT_STEP = 10 * 60000;
   const BINS = ["AT1", "AT2", "AT3", "AT4", "AT5", "EP1", "EP2", "EP3", "EP4", "EP5", "CP1", "CP2", "CP3", "CP4", "CP5"];
   const BASIN_BOUNDS = {
-    AL: [[6, -100], [48, -12]],
-    EP: [[2, -142], [34, -82]],
-    CP: [[2, -180], [34, -136]],
-    ALL: [[2, -165], [48, -12]],
+    ALL: [[4, -160], [46, -14]],
+    AL: [[6, -100], [46, -14]],
+    EP: [[2, -142], [32, -82]],
+    CP: [[2, -180], [32, -136]],
   };
   const BASIN_NAMES = { AL: "Atlantic", EP: "East Pacific", CP: "Central Pacific" };
+  const CLASS = {
+    HU: "Hurricane", MH: "Major Hurricane", TS: "Tropical Storm", TD: "Tropical Depression",
+    STS: "Subtropical Storm", SS: "Subtropical Storm", STD: "Subtropical Depression", SD: "Subtropical Depression",
+    PTC: "Potential Tropical Cyclone", PC: "Post-Tropical Cyclone", TY: "Typhoon",
+    DB: "Disturbance", LO: "Low", WV: "Tropical Wave", EX: "Extratropical",
+  };
 
   // Saffir–Simpson colors (kt)
-  const SS = [
-    [137, "#ff6060", "5"], [113, "#ff8f20", "4"], [96, "#ffc140", "3"], [83, "#ffe775", "2"],
-    [64, "#ffffcc", "1"], [34, "#00faf4", "TS"], [0, "#5ebaff", "TD"],
-  ];
-  const ssColor = (kt) => (kt == null ? "#9aa3c0" : SS.find(([min]) => kt >= min)[1]);
-  const ssLabel = (kt) => (kt == null ? "?" : SS.find(([min]) => kt >= min)[2]);
-  const WW = {
-    HWR: ["#ff3b30", "Hurricane warning"], HWA: ["#ff9ee6", "Hurricane watch"],
-    TWR: ["#3d8bff", "Tropical storm warning"], TWA: ["#ffde4a", "Tropical storm watch"],
-  };
-  const RISK = { Low: "#ffde4a", Medium: "#ff9f43", High: "#ff453a" };
+  const SS = [[137, "#ff6b6b", "5"], [113, "#ff9548", "4"], [96, "#ffbf47", "3"], [83, "#ffe27a", "2"], [64, "#fff4c2", "1"], [34, "#6fe3e8", "TS"], [0, "#7cb8ff", "TD"]];
+  const ssColor = (kt) => (kt == null ? "#9aa3c0" : SS.find(([m]) => kt >= m)[1]);
+  const ssLabel = (kt) => (kt == null ? "" : SS.find(([m]) => kt >= m)[2]);
+  const WW = { HWR: ["#ff4d4d", "Hurricane warning"], HWA: ["#ff9fd6", "Hurricane watch"], TWR: ["#4f8dff", "Tropical storm warning"], TWA: ["#ffd84a", "Tropical storm watch"] };
+  const RISK = { Low: "#ffd84a", Medium: "#ff9548", High: "#ff5a5a" };
+  const RECON = "#ffd84a";
 
-  // Model groups for the guidance toggle
   const MODEL_GROUPS = {
-    consensus: { name: "Consensus", color: "#4ad1ff", models: ["TVCN", "IVCN", "HCCA", "RVCN"], on: true },
-    global: { name: "Global models", color: "#7ee08a", models: ["AVNI", "EMXI", "EGRI", "UKXI", "CMCI", "NVGI", "CTCI", "AEMI", "CEMI"], on: true },
-    hurricane: { name: "Hurricane models", color: "#c9a0ff", models: ["HFAI", "HFBI", "HWFI", "HMNI"], on: true },
-    simple: { name: "Statistical / trajectory", color: "#9aa3c0", models: ["TABS", "TABM", "TABD", "XTRP", "CLP5"], on: false },
+    consensus: { name: "Consensus", models: ["TVCN", "IVCN", "HCCA", "RVCN"], on: true },
+    global: { name: "Global", models: ["AVNI", "EMXI", "EGRI", "UKXI", "CMCI", "NVGI", "CTCI", "AEMI", "CEMI"], on: false },
+    hurricane: { name: "Hurricane", models: ["HFAI", "HFBI", "HWFI", "HMNI"], on: false },
+    simple: { name: "Statistical", models: ["TABS", "TABM", "TABD", "XTRP", "CLP5"], on: false },
   };
   const MODEL_COLORS = {
     TVCN: "#4ad1ff", IVCN: "#7fe3ff", HCCA: "#2fb8ff", RVCN: "#9fd8ff",
@@ -57,334 +55,218 @@
     HFAI: "#c9a0ff", HFBI: "#a98bff", HWFI: "#e6a0ff", HMNI: "#d68bff",
     TABS: "#8a93b5", TABM: "#a7afcd", TABD: "#c4cae0", XTRP: "#7c84a6", CLP5: "#b0b6cc",
   };
-  const MODEL_GROUP_OF = Object.fromEntries(
-    Object.entries(MODEL_GROUPS).flatMap(([g, def]) => def.models.map((m) => [m, g])));
-  const INTENSITY = [
-    ["OFCI", "#ffffff", "Official"], ["IVCN", "#4ad1ff", "IVCN"], ["HCCA", "#2fb8ff", "HCCA"],
-    ["HFAI", "#c9a0ff", "HAFS-A"], ["HFBI", "#a98bff", "HAFS-B"], ["DSHP", "#ffb86b", "SHIPS"], ["LGEM", "#7ee08a", "LGEM"],
-  ];
+  const MODEL_GROUP_OF = Object.fromEntries(Object.entries(MODEL_GROUPS).flatMap(([g, d]) => d.models.map((m) => [m, g])));
 
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const pad = (n) => String(n).padStart(2, "0");
-  const fmtZ = (iso) => {
-    if (!iso) return "—";
-    const d = new Date(iso);
-    return `${d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })} ${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}Z`;
-  };
-  const hhmmZ = (iso) => { const d = new Date(iso); return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}Z`; };
+  const hhmmZ = (iso) => { const d = new Date(iso); return `${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}Z`; };
+  const dayZ = (iso) => { const d = new Date(iso); return `${pad(d.getUTCDate())}/${hhmmZ(iso)}`; };
+  const isoMin = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+  const ll = (lat, lon) => `${Math.abs(lat).toFixed(1)}°${lat >= 0 ? "N" : "S"} ${Math.abs(lon).toFixed(1)}°${lon >= 0 ? "E" : "W"}`;
+  const compass = (d) => ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"][Math.round(d / 22.5) % 16];
+  const mph = (kt) => Math.round(kt * 1.15078);
   const ago = (iso) => {
     const m = Math.round((Date.now() - new Date(iso)) / 60000);
-    if (m < 1) return "just now";
-    if (m < 60) return `${m} min ago`;
+    if (m < 60) return `${Math.max(m, 0)} min ago`;
     const h = Math.floor(m / 60);
-    return h < 48 ? `${h} h ${m % 60 ? `${m % 60} min ` : ""}ago` : `${Math.round(h / 24)} days ago`;
+    return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
   };
-  const ll = (lat, lon) => `${Math.abs(lat).toFixed(1)}°${lat >= 0 ? "N" : "S"} ${Math.abs(lon).toFixed(1)}°${lon >= 0 ? "E" : "W"}`;
-  const compass = (deg) => ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"][Math.round(deg / 22.5) % 16];
-  const mph = (kt) => Math.round(kt * 1.15078);
-  // HDOBs arrive every 10 minutes and the data file every ~15, so allow 40 minutes.
   const isLive = (m) => Date.now() - new Date(m.last) < 40 * 60000;
-  // "1030 AM EDT THU 15 OCTOBER 2026" -> "10:30 AM EDT Thu 15 Oct"
-  const titleTime = (s) => s.replace(/^(\d{1,2})(\d{2}) (AM|PM) (\w+) (\w)(\w+) (\d+) (\w{3})\w* \d{4}$/,
-    (_, h, m, ap, tz, d1, d2, day, mon) => `${+h}:${m} ${ap} ${tz} ${d1}${d2.toLowerCase()} ${day} ${mon[0]}${mon.slice(1).toLowerCase()}`);
-  const CLASS = {
-    HU: "Hurricane", TS: "Tropical Storm", TD: "Tropical Depression", STS: "Subtropical Storm", SS: "Subtropical Storm",
-    STD: "Subtropical Depression", SD: "Subtropical Depression", PTC: "Potential Tropical Cyclone", PC: "Post-Tropical Cyclone",
-    TY: "Typhoon", MH: "Major Hurricane",
-  };
 
   const state = {
     data: null,
+    nhc: {},          // bin -> { points, cone, track, ww, past, radii }
+    gtwo: null,
     layerIds: null,
-    nhc: {},             // bin -> { points, cone, track, ww, past, pastPts, radii, swath }
-    satKind: "ir",
-    satTimes: [],
-    satLayers: [],
-    satIdx: 0,
-    satTimer: null,
-    satOpacity: 0.85,
-    on: {
-      cone: true, track: true, ww: true, radii: true, past: true, swath: false, outlook: true,
-      models: true, invests: true, recon: true, vortex: true, tasking: true,
-    },
+    basin: "ALL",
+    selected: null,
+    tab: "forecast",
+    on: { cone: true, ww: true, models: true, past: true, recon: true, outlook: true, radii: false, sat: true },
     groupsOn: Object.fromEntries(Object.entries(MODEL_GROUPS).map(([k, v]) => [k, v.on])),
+    sat: { kind: "ir", times: [], layers: [], idx: 0, timer: null, opacity: 0.85 },
+    fitted: false,
   };
 
-  // —— Map setup ——————————————————————————————————————————————————————
-  const map = L.map("map", { zoomControl: true, worldCopyJump: false, minZoom: 2, maxZoom: 10, zoomSnap: 0.5 })
-    .fitBounds(BASIN_BOUNDS.ALL);
+  // Restore selection from the URL (#ep212026) so a view can be shared.
+  const hashId = location.hash.slice(1).toLowerCase();
+  if (/^(al|ep|cp)\d{6}$/.test(hashId)) state.selected = hashId;
+
+  // —— Map ————————————————————————————————————————————————————————
+  const map = L.map("map", { zoomControl: false, minZoom: 2, maxZoom: 11, worldCopyJump: false }).fitBounds(BASIN_BOUNDS.ALL);
+  L.control.zoom({ position: "topright" }).addTo(map);
   map.attributionControl.setPrefix("");
-  const panes = [["outlook", 380], ["cone", 400], ["radii", 410], ["lines", 420], ["recon", 600], ["points", 620], ["labels", 640]];
-  panes.forEach(([n, z]) => { map.createPane(n).style.zIndex = z; });
+  [["satW", 250], ["satE", 251], ["outlook", 380], ["cone", 400], ["radii", 410], ["lines", 420], ["recon", 600], ["points", 620], ["labels", 640]]
+    .forEach(([n, z]) => { map.createPane(n).style.zIndex = z; });
   map.getPane("labels").style.pointerEvents = "none";
+  L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}", { maxZoom: 16, attribution: "Esri" }).addTo(map);
+  L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}", { maxZoom: 16, pane: "labels", opacity: 0.8 }).addTo(map);
+  map.attributionControl.addAttribution("NOAA/NHC · GOES via NASA GIBS · ATCF");
 
-  L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}", {
-    maxZoom: 16, attribution: "Basemap © Esri",
-  }).addTo(map);
-  L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}", {
-    maxZoom: 16, pane: "labels",
-  }).addTo(map);
-  map.attributionControl.addAttribution("NHC/NOAA · GOES via NASA GIBS · ATCF");
-
-  const groups = {
+  const layers = {
     outlook: L.layerGroup().addTo(map),
-    cone: L.layerGroup().addTo(map),
-    radii: L.layerGroup().addTo(map),
-    swath: L.layerGroup(),
-    ww: L.layerGroup().addTo(map),
-    past: L.layerGroup().addTo(map),
-    track: L.layerGroup().addTo(map),
+    storms: L.layerGroup().addTo(map),   // cones, tracks, warnings — rebuilt on selection
     models: L.layerGroup().addTo(map),
-    invests: L.layerGroup().addTo(map),
     recon: L.layerGroup().addTo(map),
-    vortex: L.layerGroup().addTo(map),
-    tasking: L.layerGroup().addTo(map),
+    markers: L.layerGroup().addTo(map),
   };
-  const stormMarkers = L.layerGroup().addTo(map);
 
-  function setStatus(msg) {
-    const el = $("mapStatus");
-    el.textContent = msg || "";
-    el.hidden = !msg;
+  function setStatus(msg) { $("status").textContent = msg || ""; $("status").hidden = !msg; }
+
+  function glyph(kt, size = 24, invest = false) {
+    if (invest) {
+      return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" style="display:block;overflow:visible"><circle cx="12" cy="12" r="6" fill="none" stroke="#060818" stroke-width="4.5" opacity=".7"/><circle cx="12" cy="12" r="6" fill="none" stroke="#cfd5ef" stroke-width="2" stroke-dasharray="3 2.4"/><circle cx="12" cy="12" r="1.8" fill="#cfd5ef"/></svg>`;
+    }
+    const c = ssColor(kt);
+    const arms = kt >= 34 ? `<path d="M12 8.6C12 4.3 15.6 2.6 19.4 3.1M12 15.4C12 19.7 8.4 21.4 4.6 20.9" fill="none" stroke-linecap="round"/>` : "";
+    return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" style="display:block;overflow:visible" aria-hidden="true">
+      <g stroke="#060818" stroke-width="5.2" opacity=".75">${arms}<circle cx="12" cy="12" r="3.6" fill="#060818"/></g>
+      <g stroke="${c}" stroke-width="2.4">${arms}<circle cx="12" cy="12" r="3.4" fill="${kt >= 64 ? c : "#0b0f26"}"/></g></svg>`;
   }
 
-  // —— Controls ——————————————————————————————————————————————————————
-  function legendHtml() {
-    const dot = (c, t) => `<span><i style="background:${c}"></i>${t}</span>`;
-    const ln = (c, t) => `<span><i class="ln" style="background:${c}"></i>${t}</span>`;
-    return `
-      <div class="tw-legend__row">${SS.slice().reverse().map(([, c, l]) => dot(c, l === "TD" || l === "TS" ? l : `Cat ${l}`)).join("")}</div>
-      <div class="tw-legend__row">${Object.values(WW).map(([c, t]) => ln(c, t.replace("Tropical storm", "TS").replace("Hurricane", "Hurr."))).join("")}</div>
-      <div class="tw-legend__row">${Object.entries(RISK).map(([k, c]) => dot(c, `${k} 7-day`)).join("")}</div>
-      <div class="tw-legend__row">
-        <span><i style="border:2px solid #c9b8ff;background:none"></i>Vortex fix</span>
-        <span><i style="border:2px dashed #ffde4a;background:none"></i>Tasked fix</span>
-        <span>✈ Aircraft</span>
-      </div>
-      <div class="tw-legend__row"><span>Recon dots: SFMR (else flight-level) wind, same colors</span></div>`;
+  function popup(title, rows) {
+    return `<h4>${esc(title)}</h4><table>${rows.filter(([, v]) => v != null && v !== "")
+      .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join("")}</table>`;
   }
 
-  const LayersControl = L.Control.extend({
-    options: { position: "topright" },
-    onAdd() {
-      const el = L.DomUtil.create("div", "tw-ctl tw-layers");
-      if (window.matchMedia("(max-width: 639px)").matches) el.classList.add("collapsed");
-      const chk = (key, label, swatch) =>
-        `<label><input type="checkbox" data-layer="${key}" ${state.on[key] ? "checked" : ""}/> ${label}${swatch ? `<i class="swatch" style="background:${swatch}"></i>` : ""}</label>`;
-      el.innerHTML = `
-        <button class="tw-layers__toggle" type="button" aria-expanded="true">Layers <span aria-hidden="true">▾</span></button>
-        <div class="tw-layers__body">
-          <h5>Satellite</h5>
-          <div class="tw-seg" id="satSeg">
-            <button type="button" data-sat="off">Off</button>
-            ${Object.entries(SAT).map(([k, v]) => `<button type="button" data-sat="${k}">${v.name}</button>`).join("")}
-          </div>
-          <div class="tw-range">Opacity <input type="range" id="satOpacity" min="0.2" max="1" step="0.05" value="${state.satOpacity}" aria-label="Satellite opacity" /></div>
-          <h5>NHC advisories</h5>
-          ${chk("cone", "Forecast cone", "rgba(255,255,255,.5)")}
-          ${chk("track", "Forecast track & points", "#fff")}
-          ${chk("ww", "Watches & warnings", "#ff3b30")}
-          ${chk("radii", "Current wind field", "#ffc140")}
-          ${chk("past", "Past track", "#9aa3c0")}
-          ${chk("swath", "Cumulative wind swath", "#ff8f20")}
-          ${chk("outlook", "7-day outlook areas", "#ff9f43")}
-          <h5>ATCF</h5>
-          ${chk("models", "Model guidance tracks", "#4ad1ff")}
-          <div id="modelGroups" style="padding-left:1.4rem">
-            ${Object.entries(MODEL_GROUPS).map(([k, g]) =>
-              `<label><input type="checkbox" data-group="${k}" ${state.groupsOn[k] ? "checked" : ""}/> ${g.name}<i class="swatch" style="background:${g.color}"></i></label>`).join("")}
-          </div>
-          ${chk("invests", "Invests (best track)", "#cfd5ef")}
-          <h5>Reconnaissance</h5>
-          ${chk("recon", "Flight tracks (HDOB)", "#4ad1ff")}
-          ${chk("vortex", "Vortex fixes", "#c9b8ff")}
-          ${chk("tasking", "TCPOD tasked fixes", "#ffde4a")}
-          <details class="tw-legend" ${window.matchMedia("(min-height: 900px)").matches ? "open" : ""}>
-            <summary><h5>Legend</h5></summary>
-            ${legendHtml()}
-          </details>
-        </div>`;
-      L.DomEvent.disableClickPropagation(el);
-      L.DomEvent.disableScrollPropagation(el);
-      const toggle = el.querySelector(".tw-layers__toggle");
-      toggle.onclick = () => {
-        el.classList.toggle("collapsed");
-        toggle.setAttribute("aria-expanded", !el.classList.contains("collapsed"));
-      };
-      el.addEventListener("change", (e) => {
-        const t = e.target;
-        if (t.dataset.layer) {
-          const key = t.dataset.layer;
-          state.on[key] = t.checked;
-          t.checked ? groups[key].addTo(map) : groups[key].remove();
-          if (key === "models") el.querySelector("#modelGroups").style.opacity = t.checked ? 1 : 0.45;
-        } else if (t.dataset.group) {
-          state.groupsOn[t.dataset.group] = t.checked;
-          drawModels();
-        }
-      });
-      el.querySelector("#satSeg").addEventListener("click", (e) => {
-        const k = e.target.dataset?.sat;
-        if (k) setSatellite(k);
-      });
-      el.querySelector("#satOpacity").addEventListener("input", (e) => {
-        state.satOpacity = +e.target.value;
-        state.satLayers.forEach((l, i) => l.setOpacity(i === state.satIdx ? state.satOpacity : 0));
-      });
-      return el;
-    },
-  });
+  // —— Satellite ———————————————————————————————————————————————————
+  const satUrl = (sat, side, time) => `${GIBS}/GOES-${side}_${sat.product}/default/${time}/GoogleMapsCompatible_Level${sat.level}/{z}/{y}/{x}.png`;
 
-  const SatControl = L.Control.extend({
-    options: { position: "bottomleft" },
-    onAdd() {
-      const el = L.DomUtil.create("div", "tw-ctl tw-satbar");
-      el.innerHTML = `
-        <button type="button" id="satPrev" aria-label="Previous satellite frame">◀</button>
-        <button type="button" id="satPlay" aria-label="Loop satellite">▶</button>
-        <button type="button" id="satNext" aria-label="Next satellite frame">▶</button>
-        <span class="t" id="satTime">Satellite<small>loading…</small></span>`;
-      L.DomEvent.disableClickPropagation(el);
-      el.querySelector("#satPrev").onclick = () => { satLoop(false); satShow(state.satIdx - 1); };
-      el.querySelector("#satNext").onclick = () => { satLoop(false); satShow(state.satIdx + 1); };
-      el.querySelector("#satPlay").onclick = () => satLoop();
-      el.querySelector("#satNext").textContent = "▶|";
-      el.querySelector("#satPrev").textContent = "|◀";
-      return el;
-    },
-  });
-
-  new LayersControl().addTo(map);
-  new SatControl().addTo(map);
-
-  // —— Satellite —————————————————————————————————————————————————————
-  const satUrl = (sat, sideName, time) =>
-    `${GIBS}/GOES-${sideName}_${sat.product}/default/${time}/GoogleMapsCompatible_Level${sat.level}/{z}/{y}/{x}.png`;
-  const isoMin = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
-
-  // One zoom-2 tile inside each disk: x=0 spans 180°–90°W (West), x=1 spans 90°W–0° (East).
   async function tileExists(sat, side, time) {
+    // One zoom-2 tile inside each disk: x=0 spans 180°–90°W (West), x=1 spans 90°W–0° (East).
     const url = satUrl(sat, side, time).replace("{z}/{y}/{x}", `2/1/${side === "West" ? 0 : 1}`);
     try { return (await fetch(url, { cache: "no-store" })).ok; } catch { return false; }
   }
 
-  // GIBS returns 404 for frames not yet processed, so probe back from now for the
-  // newest time both satellites have.
+  // GIBS returns 404 for frames not yet processed. Find the newest frame both satellites have,
+  // then step back one more: the newest frame is often still filling in at higher zooms.
   async function satNewest(sat) {
-    const step = SAT_STEP_MIN * 60000;
-    // Frames are never ready within 10 minutes, so start one step back.
-    let t = Math.floor(Date.now() / step) * step - step;
-    for (let i = 0; i < 18; i++, t -= step) {
+    let t = Math.floor(Date.now() / SAT_STEP) * SAT_STEP - SAT_STEP;
+    for (let i = 0; i < 18; i++, t -= SAT_STEP) {
       const time = isoMin(t);
       const [e, w] = await Promise.all([tileExists(sat, "East", time), tileExists(sat, "West", time)]);
-      if (e && w) return t;
+      if (e && w) return t - SAT_STEP;
     }
     throw new Error("no recent frames");
   }
 
-  map.createPane("satW").style.zIndex = 250;
-  map.createPane("satE").style.zIndex = 251;
-  // Keep GOES-East to the east of the split; GOES-West shows through west of it.
-  function clipSat() {
-    const x = map.latLngToLayerPoint([0, SAT_SPLIT_LON]).x;
+  function clipSat(x) {
     map.getPane("satE").style.clipPath = `polygon(${x}px -100000px, 100000px -100000px, 100000px 100000px, ${x}px 100000px)`;
   }
-  map.on("zoomend moveend viewreset resize", clipSat);
-  map.on("zoomanim", (e) => {
-    const x = map._latLngToNewLayerPoint(L.latLng(0, SAT_SPLIT_LON), e.zoom, e.center).x;
-    map.getPane("satE").style.clipPath = `polygon(${x}px -100000px, 100000px -100000px, 100000px 100000px, ${x}px 100000px)`;
+  map.on("zoomend moveend viewreset resize", () => clipSat(map.latLngToLayerPoint([0, SAT_SPLIT_LON]).x));
+  map.on("zoomanim", (e) => clipSat(map._latLngToNewLayerPoint(L.latLng(0, SAT_SPLIT_LON), e.zoom, e.center).x));
+  clipSat(map.latLngToLayerPoint([0, SAT_SPLIT_LON]).x);
+
+  // GIBS generates tiles on first request and can briefly answer 404. Retry each tile once,
+  // then fall back to the previous one or two frames so the map never shows holes.
+  const GibsLayer = L.TileLayer.extend({
+    createTile(coords, done) {
+      const tile = document.createElement("img");
+      tile.alt = "";
+      tile.setAttribute("role", "presentation");
+      const url = this.getTileUrl(coords);
+      const t = Date.parse(this.options.time);
+      const urls = [url, url, ...[1, 2].map((k) => url.replace(this.options.time, isoMin(t - k * SAT_STEP)))];
+      let i = 0;
+      tile.onload = () => done(null, tile);
+      tile.onerror = () => {
+        if (++i >= urls.length) { done(new Error("tile unavailable"), tile); return; }
+        setTimeout(() => { tile.src = urls[i]; }, i === 1 ? 2500 : 0);
+      };
+      tile.src = urls[0];
+      return tile;
+    },
   });
-  clipSat();
 
   function satFrame(sat, time, opacity) {
-    const opts = (pane) => ({ pane, opacity, maxNativeZoom: sat.level, maxZoom: 12, tileSize: 256, attribution: "", errorTileUrl: "" });
-    const frame = L.layerGroup([
-      L.tileLayer(satUrl(sat, "West", time), opts("satW")),
-      L.tileLayer(satUrl(sat, "East", time), opts("satE")),
-    ]);
+    const opts = (pane) => ({ pane, opacity, time, maxNativeZoom: sat.level, maxZoom: 16, attribution: "" });
+    const frame = L.layerGroup([new GibsLayer(satUrl(sat, "West", time), opts("satW")), new GibsLayer(satUrl(sat, "East", time), opts("satE"))]);
     frame.setOpacity = (o) => frame.eachLayer((l) => l.setOpacity(o));
     return frame;
   }
 
   function clearSat() {
     satLoop(false);
-    state.satLayers.forEach((l) => l.remove());
-    state.satLayers = [];
-    state.satTimes = [];
+    state.sat.layers.forEach((l) => l.remove());
+    state.sat.layers = [];
+    state.sat.times = [];
   }
 
-  async function setSatellite(kind) {
-    document.querySelectorAll("#satSeg button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.sat === kind));
-    const tEl = $("satTime");
-    if (kind === "off") { state.satKind = kind; clearSat(); tEl.innerHTML = "Satellite<small>off</small>"; return; }
-    const sat = SAT[kind];
-    const switching = state.satKind !== kind || !state.satLayers.length;
-    state.satKind = kind;
-    if (switching) tEl.innerHTML = `${sat.name}<small>finding latest frame…</small>`;
+  async function loadSat(force) {
+    const s = state.sat;
+    if (!state.on.sat) { clearSat(); $("t1").textContent = "Satellite off"; $("t0").textContent = ""; return; }
+    const sat = SAT[s.kind];
+    const kind = s.kind;
+    if (force) $("t1").textContent = `${sat.name} loading…`;
     try {
       const newest = await satNewest(sat);
-      if (state.satKind !== kind) return;
-      const times = Array.from({ length: SAT_FRAMES }, (_, i) => isoMin(newest - (SAT_FRAMES - 1 - i) * SAT_STEP_MIN * 60000));
-      if (!switching && times[times.length - 1] === state.satTimes[state.satTimes.length - 1]) return;   // nothing new
+      if (kind !== s.kind || !state.on.sat) return;
+      const times = Array.from({ length: SAT_FRAMES }, (_, i) => isoMin(newest - (SAT_FRAMES - 1 - i) * SAT_STEP));
+      if (!force && times[times.length - 1] === s.times[s.times.length - 1]) return;   // nothing new
       clearSat();
-      state.satTimes = times;
-      state.satLayers = times.map((t, i) => satFrame(sat, t, i === times.length - 1 ? state.satOpacity : 0));
-      // Only the newest frame loads up front; the rest load when the loop starts.
-      state.satIdx = times.length - 1;
-      state.satLayers[state.satIdx].addTo(map);
+      s.times = times;
+      s.layers = times.map((t, i) => satFrame(sat, t, i === times.length - 1 ? s.opacity : 0));
+      s.idx = times.length - 1;
+      s.layers[s.idx].addTo(map);   // the rest load when the loop or scrubber reaches them
+      $("frame").max = times.length - 1;
+      $("frame").value = s.idx;
+      $("t0").textContent = hhmmZ(times[0]);
       satLabel();
-    } catch (e) {
-      if (state.satKind === kind) tEl.innerHTML = `${sat.name}<small>unavailable</small>`;
+    } catch {
+      if (kind === s.kind) $("t1").textContent = `${sat.name} unavailable`;
     }
   }
 
   function satLabel() {
-    const t = state.satTimes[state.satIdx];
-    if (!t) return;
-    const newest = state.satIdx === state.satTimes.length - 1;
-    $("satTime").innerHTML = `GOES ${SAT[state.satKind].name} · ${hhmmZ(t)}<small>${newest ? ago(t) : `frame ${state.satIdx + 1}/${state.satTimes.length}`}</small>`;
+    const s = state.sat;
+    const t = s.times[s.idx];
+    if (t) $("t1").textContent = `GOES ${SAT[s.kind].name} ${hhmmZ(t)}`;
   }
 
   function satShow(i) {
-    const n = state.satLayers.length;
+    const s = state.sat;
+    const n = s.layers.length;
     if (!n) return;
     const next = (i + n) % n;
-    const layer = state.satLayers[next];
-    if (!map.hasLayer(layer)) layer.addTo(map);
-    layer.setOpacity(state.satOpacity);
-    state.satLayers.forEach((l, j) => { if (j !== next) l.setOpacity(0); });
-    state.satIdx = next;
+    if (!map.hasLayer(s.layers[next])) s.layers[next].addTo(map);
+    s.layers[next].setOpacity(s.opacity);
+    s.layers.forEach((l, j) => { if (j !== next) l.setOpacity(0); });
+    s.idx = next;
+    $("frame").value = next;
     satLabel();
   }
 
   function satLoop(force) {
-    const playing = force ?? !state.satTimer;
-    clearInterval(state.satTimer);
-    state.satTimer = null;
-    const btn = $("satPlay");
-    if (btn) btn.textContent = playing ? "❚❚" : "▶";
-    if (!playing || !state.satLayers.length) return;
-    state.satLayers.forEach((l) => { if (!map.hasLayer(l)) l.addTo(map); });   // preload every frame
-    state.satTimer = setInterval(() => {
-      // Hold on the newest frame a little longer before starting over.
-      if (state.satIdx === state.satLayers.length - 1 && !state.satHold) { state.satHold = true; return; }
-      state.satHold = false;
-      satShow(state.satIdx + 1);
-    }, 550);
+    const s = state.sat;
+    const playing = force ?? !s.timer;
+    clearInterval(s.timer);
+    s.timer = null;
+    $("play").textContent = playing ? "❚❚" : "▶";
+    $("play").setAttribute("aria-label", playing ? "Pause satellite loop" : "Play satellite loop");
+    if (!playing || !s.layers.length) return;
+    s.layers.forEach((l) => { if (!map.hasLayer(l)) l.addTo(map); });   // preload every frame
+    let hold = 0;
+    s.timer = setInterval(() => {
+      if (s.idx === s.layers.length - 1 && hold++ < 2) return;   // pause on the newest frame
+      hold = 0;
+      satShow(s.idx + 1);
+    }, 500);
   }
+
+  $("play").onclick = () => satLoop();
+  $("frame").oninput = (e) => { satLoop(false); satShow(+e.target.value); };
+  $("satpick").addEventListener("click", (e) => {
+    const k = e.target.dataset?.sat;
+    if (!k) return;
+    state.sat.kind = k;
+    document.querySelectorAll("#satpick button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.sat === k));
+    if (!state.on.sat) { state.on.sat = true; document.querySelector('[data-layer="sat"]').checked = true; }
+    loadSat(true);
+  });
 
   // —— NHC MapServer —————————————————————————————————————————————————
-  async function msLayerIds() {
-    if (state.layerIds) return state.layerIds;
-    const res = await fetch(`${MS}?f=json`);
-    const info = await res.json();
-    state.layerIds = Object.fromEntries(info.layers.map((l) => [l.name.trim(), l.id]));
-    return state.layerIds;
-  }
-
   async function msQuery(id) {
-    if (id == null) return { type: "FeatureCollection", features: [] };
+    if (id == null) return null;
     const res = await fetch(`${MS}/${id}/query?where=1%3D1&outFields=*&returnGeometry=true&f=geojson&_=${Math.floor(Date.now() / 120000)}`);
     if (!res.ok) throw new Error(`MapServer ${id}: ${res.status}`);
     const gj = await res.json();
@@ -393,555 +275,447 @@
   }
 
   async function loadNhc() {
-    const ids = await msLayerIds();
-    const name = (bin, suffix) => ids[`${bin} ${suffix}`];
-    const pointsByBin = await Promise.all(BINS.map((b) => msQuery(name(b, "Forecast Points")).catch(() => null)));
-    const active = BINS.filter((b, i) => pointsByBin[i]?.features?.length);
+    if (!state.layerIds) {
+      const info = await (await fetch(`${MS}?f=json`)).json();
+      state.layerIds = Object.fromEntries(info.layers.map((l) => [l.name.trim(), l.id]));
+    }
+    const ids = state.layerIds;
+    const name = (bin, s) => ids[`${bin} ${s}`];
+    const points = await Promise.all(BINS.map((b) => msQuery(name(b, "Forecast Points")).catch(() => null)));
     const nhc = {};
-    await Promise.all(active.map(async (bin) => {
-      const [cone, track, ww, past, pastPts, radii, swath] = await Promise.all([
-        "Forecast Cone", "Forecast Track", "Watch-Warning", "Past Track", "Past Points", "Advisory Wind Field", "Past Cumulative Wind Swath",
-      ].map((s) => msQuery(name(bin, s)).catch(() => null)));
-      nhc[bin] = { points: pointsByBin[BINS.indexOf(bin)], cone, track, ww, past, pastPts, radii, swath };
+    await Promise.all(BINS.map(async (bin, i) => {
+      if (!points[i]?.features?.length) return;
+      const [cone, track, ww, past, radii] = await Promise.all(
+        ["Forecast Cone", "Forecast Track", "Watch-Warning", "Past Track", "Advisory Wind Field"].map((s) => msQuery(name(bin, s)).catch(() => null)));
+      nhc[bin] = { points: points[i], cone, track, ww, past, radii };
     }));
-    const [gtwoAreas, gtwoPts, gtwoLines, gtwo2] = await Promise.all([
-      ids["Seven-Day: Potential Development Region"], ids["Seven-Day: Current Location"],
-      ids["Seven-Day: Development Motion"], ids["Two-Day: Current Location"],
-    ].map((id) => msQuery(id).catch(() => null)));
+    const [areas, pts] = await Promise.all([ids["Seven-Day: Potential Development Region"], ids["Seven-Day: Current Location"]].map((id) => msQuery(id).catch(() => null)));
     state.nhc = nhc;
-    state.gtwo = { areas: gtwoAreas, pts: gtwoPts, lines: gtwoLines, two: gtwo2 };
-    drawNhc();
+    state.gtwo = { areas, pts };
   }
 
-  function popupTable(title, rows) {
-    return `<h4>${esc(title)}</h4><table>${rows.filter(([, v]) => v != null && v !== "")
-      .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join("")}</table>`;
-  }
-
-  function drawNhc() {
-    ["cone", "track", "ww", "past", "radii", "swath", "outlook"].forEach((k) => groups[k].clearLayers());
-    for (const [bin, d] of Object.entries(state.nhc)) {
-      if (d.cone) L.geoJSON(d.cone, {
-        pane: "cone", style: { color: "#ffffff", weight: 1.2, opacity: 0.8, fillColor: "#ffffff", fillOpacity: 0.13 },
-        interactive: false,
-      }).addTo(groups.cone);
-      if (d.swath) L.geoJSON(d.swath, {
-        pane: "radii",
-        style: (f) => ({ color: ssColor(f.properties.radii), weight: 0.8, fillColor: f.properties.radii >= 64 ? "#ff6060" : f.properties.radii >= 50 ? "#ff8f20" : "#ffc140", fillOpacity: 0.16 }),
-        interactive: false,
-      }).addTo(groups.swath);
-      if (d.radii) L.geoJSON(d.radii, {
-        pane: "radii",
-        style: (f) => {
-          const r = f.properties.radii;
-          const c = r >= 64 ? "#ff6060" : r >= 50 ? "#ff8f20" : "#ffc140";
-          return { color: c, weight: 1.4, fillColor: c, fillOpacity: 0.12 };
-        },
-        onEachFeature: (f, l) => {
-          const p = f.properties;
-          l.bindTooltip(`${p.radii} kt wind field — NE ${p.ne} · SE ${p.se} · SW ${p.sw} · NW ${p.nw} nm`, { className: "tw-tip", sticky: true });
-        },
-      }).addTo(groups.radii);
-      if (d.ww) L.geoJSON(d.ww, {
-        pane: "lines",
-        style: (f) => ({ color: (WW[f.properties.tcww] || ["#fff"])[0], weight: 6, opacity: 0.95, lineCap: "round" }),
-        onEachFeature: (f, l) => l.bindTooltip((WW[f.properties.tcww] || [, f.properties.tcww])[1], { className: "tw-tip", sticky: true }),
-      }).addTo(groups.ww);
-      if (d.past) L.geoJSON(d.past, {
-        pane: "lines", style: { color: "#c4cae0", weight: 2, opacity: 0.7, dashArray: "1 5", lineCap: "round" }, interactive: false,
-      }).addTo(groups.past);
-      if (d.pastPts) L.geoJSON(d.pastPts, {
-        pane: "lines",
-        pointToLayer: (f, latlng) => L.circleMarker(latlng, {
-          pane: "lines", radius: 3, weight: 0, fillOpacity: 0.9, fillColor: ssColor(f.properties.intensity),
-        }),
-        onEachFeature: (f, l) => {
-          const p = f.properties;
-          const dtg = String(Math.round(p.dtg));
-          l.bindTooltip(`${dtg.slice(6, 8)}/${dtg.slice(8, 10)}Z · ${p.stormtype} · ${p.intensity} kt${p.mslp ? ` · ${p.mslp} mb` : ""}`, { className: "tw-tip" });
-        },
-      }).addTo(groups.past);
-      if (d.track) L.geoJSON(d.track, {
-        pane: "lines", style: { color: "#ffffff", weight: 2.4, opacity: 0.95 }, interactive: false,
-      }).addTo(groups.track);
-      if (d.points) L.geoJSON(d.points, {
-        pane: "points",
-        filter: (f) => f.properties.tau > 0,
-        pointToLayer: (f, latlng) => L.circleMarker(latlng, {
-          pane: "points", radius: 6, color: "#0b0f26", weight: 1.5, fillOpacity: 1, fillColor: ssColor(f.properties.maxwind),
-        }),
-        onEachFeature: (f, l) => {
-          const p = f.properties;
-          l.bindTooltip(`${p.datelbl} · ${p.maxwind} kt`, { className: "tw-tip" });
-          l.bindPopup(popupTable(`${p.stormname} · ${p.tau} h`, [
-            ["Valid", esc(p.fldatelbl || p.datelbl)],
-            ["Forecast", esc(p.tcdvlp)],
-            ["Max wind", `${p.maxwind} kt (${mph(p.maxwind)} mph)`],
-            ["Gusts", p.gust ? `${p.gust} kt` : null],
-            ["Position", ll(p.lat, p.lon)],
-            ["Advisory", esc(p.advisnum)],
-          ]));
-        },
-      }).addTo(groups.track);
-    }
-
-    const g = state.gtwo || {};
-    if (g.areas) L.geoJSON(g.areas, {
-      pane: "outlook",
-      style: (f) => {
-        const c = RISK[f.properties.risk7day] || "#ffde4a";
-        return { color: c, weight: 2, dashArray: "6 5", fillColor: c, fillOpacity: 0.16 };
-      },
-      onEachFeature: (f, l) => {
-        const p = f.properties;
-        l.bindPopup(popupTable(`7-day outlook area · ${p.basin || ""}`, [
-          ["48 hours", `${esc(p.prob2day)} (${esc(p.risk2day)})`],
-          ["7 days", `${esc(p.prob7day)} (${esc(p.risk7day)})`],
-        ]));
-      },
-    }).addTo(groups.outlook);
-    if (g.lines) L.geoJSON(g.lines, {
-      pane: "outlook", style: { color: "#ffffff", weight: 2, opacity: 0.8 }, interactive: false,
-    }).addTo(groups.outlook);
-    [g.pts, g.two].forEach((pts) => pts && L.geoJSON(pts, {
-      pane: "outlook",
-      pointToLayer: (f, latlng) => L.marker(latlng, {
-        pane: "outlook",
-        icon: L.divIcon({ className: "", html: `<div style="font:800 22px/1 var(--brand);color:${RISK[f.properties.risk7day] || "#ffde4a"};text-shadow:0 0 4px #000">✕</div>`, iconSize: [22, 22], iconAnchor: [11, 11] }),
-      }),
-      onEachFeature: (f, l) => {
-        const p = f.properties;
-        l.bindPopup(popupTable("Area of interest", [
-          ["48 hours", `${esc(p.prob2day)} (${esc(p.risk2day)})`],
-          ["7 days", `${esc(p.prob7day)} (${esc(p.risk7day)})`],
-        ]));
-      },
-    }).addTo(groups.outlook));
-  }
-
-  // —— ATCF guidance, invests, recon ———————————————————————————————————
-  function drawModels() {
-    groups.models.clearLayers();
-    for (const sys of state.data?.systems || []) {
-      const m = sys.models;
-      if (!m) continue;
-      const cyc = new Date(m.cycle);
-      for (const [tech, pts] of Object.entries(m.tracks)) {
-        const grp = MODEL_GROUP_OF[tech];
-        if (!grp || !state.groupsOn[grp]) continue;
-        const color = MODEL_COLORS[tech] || MODEL_GROUPS[grp].color;
-        const isCons = grp === "consensus";
-        const line = L.polyline(pts.map((p) => [p.lat, p.lon]), {
-          pane: "lines", color, weight: isCons ? 2.6 : 1.6, opacity: grp === "simple" ? 0.6 : 0.85,
-          dashArray: grp === "simple" ? "4 4" : null,
-        });
-        const end = pts[pts.length - 1];
-        line.bindTooltip(`${tech} · ${pad(cyc.getUTCHours())}Z ${cyc.getUTCDate()}th · ${sys.name} · to ${end.tau} h`, { className: "tw-tip", sticky: true });
-        line.addTo(groups.models);
-        pts.filter((p) => p.tau > 0 && p.tau % 24 === 0).forEach((p) =>
-          L.circleMarker([p.lat, p.lon], { pane: "lines", radius: 2, weight: 0, fillColor: color, fillOpacity: 0.9, interactive: false }).addTo(groups.models));
-      }
-    }
-  }
-
-  function drawInvests() {
-    groups.invests.clearLayers();
-    for (const sys of state.data?.systems || []) {
-      if (sys.kind !== "invest" || !sys.best.length) continue;
-      L.polyline(sys.best.map((p) => [p.lat, p.lon]), {
-        pane: "lines", color: "#cfd5ef", weight: 1.8, opacity: 0.75, dashArray: "2 5",
-      }).addTo(groups.invests);
-      sys.best.forEach((p) => L.circleMarker([p.lat, p.lon], {
-        pane: "lines", radius: 2.6, weight: 0, fillColor: ssColor(p.vmax), fillOpacity: 0.85,
-      }).bindTooltip(`${fmtZ(p.t)} · ${p.ty} · ${p.vmax} kt${p.mslp ? ` · ${p.mslp} mb` : ""}`, { className: "tw-tip" }).addTo(groups.invests));
-    }
-  }
-
-  function bearing(a, b) {
-    const r = Math.PI / 180;
-    const y = Math.sin((b.lon - a.lon) * r) * Math.cos(b.lat * r);
-    const x = Math.cos(a.lat * r) * Math.sin(b.lat * r) - Math.sin(a.lat * r) * Math.cos(b.lat * r) * Math.cos((b.lon - a.lon) * r);
-    return (Math.atan2(y, x) / r + 360) % 360;
-  }
-
-  function obRows(o) {
-    return [
-      ["Time", fmtZ(o.t)],
-      ["Position", ll(o.lat, o.lon)],
-      ["Altitude", o.alt != null ? `${o.alt.toLocaleString()} m` : null],
-      ["Flight-level wind", o.wspd != null ? `${String(o.wdir).padStart(3, "0")}° ${o.wspd} kt` : null],
-      ["Peak 10-s wind", o.peak != null ? `${o.peak} kt` : null],
-      ["SFMR surface wind", o.sfmr != null ? `${o.sfmr} kt` : null],
-      ["Extrap. SLP", o.slp != null ? `${o.slp} mb` : null],
-    ];
-  }
-
-  function drawRecon() {
-    groups.recon.clearLayers();
-    groups.vortex.clearLayers();
-    groups.tasking.clearLayers();
-    const r = state.data?.recon || {};
-    for (const m of r.missions || []) {
-      const obs = m.obs;
-      if (obs.length < 2) continue;
-      L.polyline(obs.map((o) => [o.lat, o.lon]), {
-        pane: "recon", color: "#4ad1ff", weight: 1.5, opacity: isLive(m) ? 0.75 : 0.4,
-      }).addTo(groups.recon);
-      // Color observations by surface (SFMR) wind where measured, else flight-level wind.
-      obs.forEach((o, i) => {
-        if (i % 2 && i !== obs.length - 1) return;   // every minute is plenty at this scale
-        const kt = o.sfmr ?? o.wspd;
-        L.circleMarker([o.lat, o.lon], {
-          pane: "recon", radius: 2.4, weight: 0, fillColor: ssColor(kt), fillOpacity: isLive(m) ? 0.95 : 0.6,
-        }).bindPopup(popupTable(`${m.aircraft} · ${m.storm}`, obRows(o))).addTo(groups.recon);
-      });
-      const last = obs[obs.length - 1];
-      const prev = obs[obs.length - 2];
-      const hdg = bearing(prev, last);
-      L.marker([last.lat, last.lon], {
-        pane: "points",
-        icon: L.divIcon({
-          className: "",
-          html: `<div class="tw-ac" style="transform:rotate(${hdg - 90}deg);opacity:${isLive(m) ? 1 : 0.55}">✈</div>`,
-          iconSize: [18, 18], iconAnchor: [9, 9],
-        }),
-      }).bindTooltip(`${m.aircraft} ${m.storm} · ${hhmmZ(last.t)}${isLive(m) ? "" : " (ended)"}`, { className: "tw-tip", direction: "top", offset: [0, -8] })
-        .bindPopup(popupTable(`${m.aircraft} · ${m.missionId} ${m.storm}`, [
-          ["Status", isLive(m) ? "Reporting" : `Last report ${ago(m.last)}`],
-          ...obRows(last),
-          ["Max FL wind", m.maxFl ? `${m.maxFl.wspd} kt at ${hhmmZ(m.maxFl.t)}` : null],
-          ["Max SFMR", m.maxSfmr ? `${m.maxSfmr.sfmr} kt at ${hhmmZ(m.maxSfmr.t)}` : null],
-        ]))
-        .addTo(groups.recon);
-    }
-
-    for (const v of r.vortex || []) {
-      L.marker([v.lat, v.lon], {
-        pane: "points",
-        icon: L.divIcon({ className: "", html: `<div class="tw-vortex"></div>`, iconSize: [16, 16], iconAnchor: [8, 8] }),
-      }).bindTooltip(`Vortex fix ${hhmmZ(v.t)}${v.slp ? ` · ${v.slp} mb` : ""}`, { className: "tw-tip" })
-        .bindPopup(popupTable(`Vortex fix · ${v.storm}`, [
-          ["Time", fmtZ(v.t)],
-          ["Center", ll(v.lat, v.lon)],
-          ["Min. pressure", esc(v.slpNote)],
-          ["Max FL wind", v.maxFl ? `${v.maxFl} kt` : null],
-          ["Eye", esc([v.eye, v.eyeSize].filter(Boolean).join(" · "))],
-          ["Mission", esc(v.mission)],
-        ])).addTo(groups.vortex);
-    }
-
-    for (const b of state.data?.tcpod?.basins || []) {
-      for (const s of b.systems) {
-        for (const f of s.flights) {
-          if (f.lat == null) continue;
-          L.marker([f.lat, f.lon], {
-            pane: "points",
-            icon: L.divIcon({ className: "", html: `<div class="tw-target"></div>`, iconSize: [26, 26], iconAnchor: [13, 13] }),
-          }).bindTooltip(`Tasked: ${f.aircraft} · ${f.fields.fixTime || ""}`, { className: "tw-tip" })
-            .bindPopup(popupTable(`TCPOD · ${s.name}`, podRows(f))).addTo(groups.tasking);
-        }
-      }
-    }
-  }
-
-  function podRows(f) {
-    const F = f.fields;
-    return [
-      ["Flight", esc(`${f.flight} — ${f.aircraft}`)],
-      ["Fix / target time", esc(F.fixTime)],
-      ["Mission ID", esc(F.mission)],
-      ["Departure", esc(F.departure)],
-      ["Position", esc(F.position)],
-      ["On station", esc(F.onStation)],
-      ["Altitude", esc(F.altitude)],
-      ["Profile", esc(F.profile)],
-      ["WRA", esc(F.wra)],
-    ];
-  }
-
-  // —— Storm markers and panels —————————————————————————————————————
-  function systemsList() {
+  // —— Systems list ———————————————————————————————————————————————————
+  function systems() {
     const d = state.data;
+    if (!d) return [];
     const atcf = Object.fromEntries((d.systems || []).map((s) => [s.id, s]));
     const list = (d.storms || []).map((s) => ({ ...s, kind: "storm", basin: s.id.slice(0, 2).toUpperCase(), atcf: atcf[s.id] }));
     for (const s of d.systems || []) {
       if (s.kind !== "invest" || !s.best.length) continue;
       const last = s.best[s.best.length - 1];
-      list.push({
-        id: s.id, kind: "invest", basin: s.basin, name: s.name, classification: last.ty,
-        intensity: last.vmax, pressure: last.mslp, lat: last.lat, lon: last.lon, lastUpdate: last.t, atcf: s,
-      });
+      list.push({ id: s.id, kind: "invest", basin: s.basin, name: s.name, classification: last.ty, intensity: last.vmax,
+        pressure: last.mslp, lat: last.lat, lon: last.lon, lastUpdate: last.t, atcf: s });
     }
-    return list;
+    return list.sort((a, b) => (a.kind === b.kind ? (b.intensity || 0) - (a.intensity || 0) : a.kind === "storm" ? -1 : 1));
   }
 
-  function drawStormMarkers() {
-    stormMarkers.clearLayers();
-    for (const s of systemsList()) {
-      if (s.lat == null) continue;
-      const invest = s.kind === "invest";
-      const label = invest ? s.id.slice(2, 4) + s.id[1].toUpperCase() : ssLabel(s.intensity);
-      const m = L.marker([s.lat, s.lon], {
-        pane: "points", zIndexOffset: 1000,
-        icon: L.divIcon({
-          className: "",
-          html: `<div class="tw-storm${invest ? " invest" : ""}" style="--c:${ssColor(s.intensity)}">${label}</div>`,
-          iconSize: [30, 30], iconAnchor: [15, 15],
-        }),
-      });
-      m.bindTooltip(s.name, { permanent: true, direction: "right", offset: [16, 0], className: "tw-label", pane: "labels" });
-      m.on("click", () => { document.getElementById(`storm-${s.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" }); });
-      m.addTo(stormMarkers);
-    }
-  }
-
-  function intensityChart(sys) {
-    const m = sys?.models;
-    if (!m) return "";
-    const series = INTENSITY.map(([tech, color, name]) => {
-      const pts = (m.tracks[tech] || []).filter((p) => p.vmax != null && p.tau <= 168);
-      return { tech, color, name, pts };
-    }).filter((s) => s.pts.length >= 2);
-    if (!series.length) return "";
-    // Narrower drawing on phones so the axis text stays readable once scaled.
-    const W = window.matchMedia("(max-width: 639px)").matches ? 340 : 560, H = 150, L0 = 30, R0 = 8, T0 = 8, B0 = 20;
-    const maxTau = Math.max(120, ...series.flatMap((s) => s.pts.map((p) => p.tau)));
-    const vals = series.flatMap((s) => s.pts.map((p) => p.vmax));
-    const lo = Math.max(0, Math.floor((Math.min(...vals) - 10) / 20) * 20);
-    const hi = Math.ceil((Math.max(...vals) + 10) / 20) * 20;
-    const x = (t) => L0 + (t / maxTau) * (W - L0 - R0);
-    const y = (v) => T0 + (1 - (v - lo) / (hi - lo)) * (H - T0 - B0);
-    let grid = "";
-    // Saffir–Simpson thresholds as faint bands
-    [[34, "TS"], [64, "H1"], [96, "MH"]].forEach(([v, t]) => {
-      if (v > lo && v < hi) grid += `<line x1="${L0}" x2="${W - R0}" y1="${y(v)}" y2="${y(v)}" stroke="${ssColor(v)}" stroke-opacity=".35" stroke-dasharray="3 4"/><text x="${W - R0}" y="${y(v) - 3}" text-anchor="end" font-size="9" fill="${ssColor(v)}" fill-opacity=".7">${t}</text>`;
+  // 7-day outlook areas, named from the outlook text where the 7-day chance matches.
+  function outlookAreas() {
+    const feats = state.gtwo?.areas?.features || [];
+    const texts = state.data?.outlooks || [];
+    return feats.map((f, i) => {
+      const p = f.properties;
+      const basin = /atl/i.test(p.basin || "") ? "AL" : /cent/i.test(p.basin || "") ? "CP" : "EP";
+      const text = (texts.find((o) => o.basin === basin) || {}).text || "";
+      const pct = String(p.prob7day || "").replace("%", "");
+      const para = text.split(/\n\s*\n/).find((x) => new RegExp(`7 days\\.\\.\\.\\w+\\.\\.\\.(near )?${pct} percent`).test(x));
+      const title = para ? para.split("\n")[0].replace(/[:.]\s*$/, "").trim() : "Area of interest";
+      return { id: `area${i}`, basin, title, p, feature: f, text: para || "" };
     });
-    for (let v = lo; v <= hi; v += 20) grid += `<text x="${L0 - 5}" y="${y(v) + 3}" text-anchor="end" font-size="9" fill="rgba(255,255,255,.42)">${v}</text>`;
-    for (let t = 0; t <= maxTau; t += 24) grid += `<line x1="${x(t)}" x2="${x(t)}" y1="${T0}" y2="${H - B0}" stroke="rgba(255,255,255,.07)"/><text x="${x(t)}" y="${H - 6}" text-anchor="middle" font-size="9" fill="rgba(255,255,255,.42)">${t}h</text>`;
-    const lines = series.map((s) =>
-      `<polyline fill="none" stroke="${s.color}" stroke-width="${s.tech === "OFCI" ? 2.4 : 1.6}" stroke-linejoin="round" points="${s.pts.map((p) => `${x(p.tau).toFixed(1)},${y(p.vmax).toFixed(1)}`).join(" ")}"><title>${s.name}</title></polyline>`).join("");
-    const cyc = new Date(m.cycle);
-    return `<figure class="ichart"><figcaption>Intensity guidance (kt) · ${pad(cyc.getUTCHours())}Z cycle</figcaption>
-      <div class="ichart__key">${series.map((s) => `<span><i style="background:${s.color}"></i>${s.name}</span>`).join("")}</div>
-      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Intensity guidance for ${esc(sys.name)}">${grid}${lines}</svg></figure>`;
   }
 
-  function renderStorms() {
-    const list = systemsList();
-    const el = $("storms");
-    const vortex = state.data.recon?.vortex || [];
-    const pod = state.data.tcpod;
-    if (!list.length) {
-      el.innerHTML = `<p class="tw-empty">No active tropical cyclones or invests. Check the outlooks below for areas NHC is watching.</p>`;
-      return;
-    }
-    el.innerHTML = list.map((s) => {
-      const invest = s.kind === "invest";
-      const cls = CLASS[s.classification] || s.classification || "";
-      const fix = vortex.find((v) => v.storm.toLowerCase() === s.id.toLowerCase());
-      const nameKey = (s.name || "").toUpperCase().split(" ").pop();
-      const tasked = (pod?.basins || []).flatMap((b) => b.systems).filter((x) => x.name.toUpperCase().includes(nameKey) || x.name.toUpperCase().includes(s.id.slice(2, 4) + s.id[1].toUpperCase()));
-      const flights = tasked.flatMap((x) => x.flights);
-      const L = s.links || {};
-      const move = s.movementSpeed === 0 ? "Stationary"
-        : s.movementSpeed != null && s.movementDir != null ? `${compass(s.movementDir)} ${s.movementSpeed} kt` : "—";
-      return `<article class="storm" id="storm-${esc(s.id)}">
-        <div class="storm__top">
-          <div class="storm__badge${invest ? " invest" : ""}" style="--c:${ssColor(s.intensity)}">${invest ? "INV" : ssLabel(s.intensity)}</div>
-          <h3 class="storm__name">${esc(invest ? s.name : `${cls} ${s.name}`)}<small>${esc(s.id.toUpperCase())} · ${BASIN_NAMES[s.basin] || s.basin}${s.advisory ? ` · Advisory ${esc(s.advisory)}` : ""} · ${fmtZ(s.lastUpdate)}</small></h3>
-          <button class="btn btn--secondary btn--sm storm__zoom" data-zoom="${esc(s.id)}">Zoom</button>
-        </div>
-        <div class="storm__stats">
-          <div class="stat"><span>Max wind</span><b>${s.intensity != null ? `${s.intensity} kt` : "—"}</b></div>
-          <div class="stat"><span>Pressure</span><b>${s.pressure ? `${s.pressure} mb` : "—"}</b></div>
-          <div class="stat"><span>Movement</span><b>${move}</b></div>
-          <div class="stat"><span>Position</span><b>${s.lat != null ? ll(s.lat, s.lon) : "—"}</b></div>
-        </div>
-        ${fix ? `<p class="storm__note"><b>Latest recon fix</b> ${fmtZ(fix.t)} — ${esc(fix.slpNote)}${fix.maxFl ? `, max flight-level wind ${fix.maxFl} kt` : ""}${fix.eye ? `, eye ${esc(fix.eye.toLowerCase())}` : ""}.</p>` : ""}
-        ${flights.length ? `<p class="storm__note"><b>Tasked</b> ${flights.map((f) => `${esc(f.aircraft)} (${esc(f.fields.profile?.toLowerCase() || "mission")}, ${esc(f.fields.fixTime || "")})`).join("; ")}.</p>` : ""}
-        ${intensityChart(s.atcf)}
-        ${invest ? "" : `<div class="storm__links">
-          ${L.public ? `<a href="${esc(L.public)}" target="_blank" rel="noopener">Public advisory</a>` : ""}
-          ${L.discussion ? `<a href="${esc(L.discussion)}" target="_blank" rel="noopener">Discussion</a>` : ""}
-          ${L.forecast ? `<a href="${esc(L.forecast)}" target="_blank" rel="noopener">Forecast advisory</a>` : ""}
-          ${L.windProbs ? `<a href="${esc(L.windProbs)}" target="_blank" rel="noopener">Wind probabilities</a>` : ""}
-          ${L.graphics ? `<a href="${esc(L.graphics)}" target="_blank" rel="noopener">NHC graphics</a>` : ""}
-        </div>`}
-      </article>`;
-    }).join("");
-    el.querySelectorAll("[data-zoom]").forEach((b) => { b.onclick = () => zoomTo(b.dataset.zoom); });
+  const inBasin = (b) => state.basin === "ALL" || state.basin === b;
+
+  function catName(p) {
+    if (p.dvlbl === "H" || p.dvlbl === "M") return `Cat ${ssLabel(p.maxwind)}`;
+    if (p.dvlbl === "S") return "TS";
+    if (p.dvlbl === "D") return "TD";
+    return (p.tcdvlp || "").replace("Post-Tropical Cyclone", "Post-trop").replace("Remnant Low", "Remnant") || "—";
   }
 
-  function renderPod() {
-    const pod = state.data.tcpod;
-    const el = $("pod");
-    if (!pod) { el.innerHTML = `<p class="tw-empty">The TCPOD couldn't be loaded.</p>`; return; }
-    $("podNote").textContent = `No. ${pod.number || "—"}${pod.issued ? ` · Issued ${titleTime(pod.issued)}` : ""}`;
-    const basins = pod.basins.map((b) => {
-      const body = b.negative
-        ? `<p class="pod-text">No reconnaissance requirements.</p>`
-        : b.systems.map((s) => `<div class="pod-sys"><b>${esc(s.name)}</b>${s.note ? `<p class="pod-text">${esc(s.note)}</p>` : ""}
-            ${s.flights.map((f) => `<div class="pod-flight">
-              <div class="pod-flight__head">${esc(f.flight === "One" && s.flights.length === 1 ? "" : `Flight ${f.flight} · `)}${esc(f.aircraft)}<span>${esc(f.fields.profile || "")}</span></div>
-              <dl>${podRows(f).slice(1).filter(([, v]) => v).map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
-            </div>`).join("")}</div>`).join("");
-      return `<div class="pod-basin"><h3>${esc(b.name)}</h3>${body}
-        ${b.outlook ? `<p class="tw-sub">Outlook for succeeding day</p><p class="pod-text">${esc(b.outlook)}</p>` : ""}
-        ${b.remarks ? `<p class="tw-sub">Remarks</p><p class="pod-text">${esc(b.remarks)}</p>` : ""}</div>`;
-    }).join("");
-    el.innerHTML = `<p class="pod-text" style="margin:0 0 .6rem">Valid ${esc(pod.valid || "—")}</p>${basins}
-      <details class="raw"><summary>Full TCPOD text</summary><pre>${esc(pod.text)}</pre></details>`;
+  // Intensity guidance: NHC official forecast over a grey envelope of the intensity aids.
+  function intensityChart(s, H = 150) {
+    const tr = s.atcf?.models?.tracks;
+    if (!tr) return "";
+    const W = 336, L0 = 30, B0 = 20, R0 = 6, T0 = 8;
+    const all = Object.entries(tr).filter(([k, v]) => k !== "OFCI" && v.some((p) => p.vmax)).map(([, v]) => v.filter((p) => p.tau <= 120 && p.vmax));
+    const off = (tr.OFCI || []).filter((p) => p.tau <= 120 && p.vmax);
+    const vals = all.flat().concat(off).map((p) => p.vmax);
+    if (!vals.length) return "";
+    const hi = Math.ceil(Math.max(...vals) / 20) * 20 + 10;
+    const x = (t) => L0 + t / 120 * (W - L0 - R0), y = (v) => T0 + (1 - v / hi) * (H - T0 - B0);
+    const mono = 'font-family="IBM Plex Mono, monospace" font-size="10" fill="rgba(255,255,255,.4)"';
+    let svg = "";
+    for (let v = 0; v <= hi; v += 20) svg += `<line x1="${L0}" x2="${W - R0}" y1="${y(v)}" y2="${y(v)}" stroke="rgba(255,255,255,.07)"/><text x="${L0 - 6}" y="${y(v) + 3}" text-anchor="end" ${mono}>${v}</text>`;
+    for (let t = 0; t <= 120; t += 24) svg += `<text x="${x(t)}" y="${H - 5}" text-anchor="middle" ${mono}>${t}h</text>`;
+    [[34, "TS"], [64, "Hurricane"], [96, "Major"]].forEach(([v, t]) => {
+      if (v < hi) svg += `<line x1="${L0}" x2="${W - R0}" y1="${y(v)}" y2="${y(v)}" stroke="rgba(255,255,255,.22)" stroke-dasharray="2 4"/><text x="${W - R0}" y="${y(v) - 4}" text-anchor="end" font-size="10" fill="rgba(255,255,255,.45)">${t}</text>`;
+    });
+    const line = (pts) => pts.map((p) => `${x(p.tau).toFixed(1)},${y(p.vmax).toFixed(1)}`).join(" ");
+    all.forEach((pts) => { svg += `<polyline fill="none" stroke="rgba(255,255,255,.2)" stroke-width="1" points="${line(pts)}"/>`; });
+    if (off.length) svg += `<polyline fill="none" stroke="#4ad1ff" stroke-width="2.2" stroke-linejoin="round" points="${line(off)}"/>`;
+    return `<h5 class="sub">Intensity guidance (kt)</h5><svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block" role="img" aria-label="Intensity guidance for ${esc(s.name)}">${svg}</svg>
+      <p class="chart-key">${off.length ? '<span style="color:#4ad1ff">━</span> NHC official &nbsp; ' : ""}<span style="color:rgba(255,255,255,.4)">━</span> ${all.length} models · ${hhmmZ(s.atcf.models.cycle)} cycle</p>`;
   }
 
-  function renderRecon() {
+  function stormRecon(s) {
     const r = state.data.recon || {};
-    const el = $("recon");
-    const missions = r.missions || [];
-    const vortex = r.vortex || [];
-    if (!missions.length && !vortex.length) {
-      el.innerHTML = `<p class="tw-empty">No reconnaissance observations in the last 12 hours.</p>`;
-      return;
-    }
-    const mrows = missions.map((m) => {
-      const last = m.obs[m.obs.length - 1];
-      return `<tr>
-        <td><b>${esc(m.aircraft)}</b>${isLive(m) ? '<span class="live">LIVE</span>' : ""}<small>${esc(m.missionId)} ${esc(m.storm)}</small></td>
-        <td>${hhmmZ(last.t)}<small>${ago(last.t)}</small></td>
-        <td>${ll(last.lat, last.lon)}<small>${last.alt != null ? `${last.alt.toLocaleString()} m` : ""}</small></td>
-        <td>${m.maxFl ? `${m.maxFl.wspd} kt` : "—"}<small>${m.maxFl ? hhmmZ(m.maxFl.t) : ""}</small></td>
-        <td>${m.maxSfmr ? `${m.maxSfmr.sfmr} kt` : "—"}<small>${m.maxSfmr ? hhmmZ(m.maxSfmr.t) : ""}</small></td>
-      </tr>`;
-    }).join("");
-    const vrows = vortex.slice(0, 8).map((v) => `<tr>
-        <td><b>${esc(v.storm)}</b><small>${esc(v.mission.replace(/\s+OB\s+\d+$/, ""))}</small></td>
-        <td>${fmtZ(v.t)}<small>${ago(v.t)}</small></td>
-        <td>${ll(v.lat, v.lon)}</td>
-        <td>${v.slp ? `${v.slp} mb` : "—"}<small>${/EXTRAP/.test(v.slpNote) ? "extrap." : "dropsonde"}</small></td>
-        <td>${v.maxFl ? `${v.maxFl} kt` : "—"}<small>${esc(v.eye.toLowerCase())}</small></td>
-      </tr>`).join("");
-    el.innerHTML = `
-      ${missions.length ? `<div class="tw-table-wrap"><table class="flights">
-        <thead><tr><th>Aircraft</th><th>Last ob</th><th>Position</th><th>Max FL wind</th><th>Max SFMR</th></tr></thead>
-        <tbody>${mrows}</tbody></table></div>` : `<p class="tw-empty">No aircraft observations in the last 12 hours.</p>`}
-      ${vortex.length ? `<p class="tw-sub">Vortex fixes</p><div class="tw-table-wrap"><table class="flights">
-        <thead><tr><th>Storm</th><th>Time</th><th>Center</th><th>Min. pressure</th><th>Max FL wind</th></tr></thead>
-        <tbody>${vrows}</tbody></table></div>` : ""}`;
-  }
-
-  function renderOutlooks() {
-    const two = state.data.outlooks || [];
-    const tabs = $("twoTabs");
-    if (!two.length) { $("twoText").textContent = "Outlooks couldn't be loaded."; return; }
-    const pick = (i) => {
-      tabs.querySelectorAll("button").forEach((b, j) => b.setAttribute("aria-pressed", i === j));
-      $("twoText").textContent = two[i].text;
-      $("twoNote").innerHTML = two[i].link ? `<a href="${esc(two[i].link)}" target="_blank" rel="noopener">Graphical outlook ↗</a>` : "";
+    const key = (s.name || "").toUpperCase().split(" ").pop();
+    const invTag = s.id.slice(2, 4) + s.id[1].toUpperCase();
+    const pod = (state.data.tcpod?.basins || []).flatMap((b) => b.systems)
+      .filter((x) => x.name.toUpperCase().includes(key) || x.name.toUpperCase().includes(invTag));
+    return {
+      vortex: (r.vortex || []).filter((v) => v.storm.toLowerCase() === s.id),
+      missions: (r.missions || []).filter((m) => m.storm.toUpperCase().includes(key) || m.missionId.includes(invTag)),
+      flights: pod.flatMap((x) => x.flights),
     };
-    const current = [...tabs.querySelectorAll("button")].findIndex((b) => b.getAttribute("aria-pressed") === "true");
-    tabs.innerHTML = two.map((o) => `<button type="button">${esc(BASIN_NAMES[o.basin] || o.basin)}</button>`).join("");
-    tabs.querySelectorAll("button").forEach((b, i) => { b.onclick = () => pick(i); });
-    tabs.style.marginBottom = "0.2rem";
-    pick(current >= 0 ? current : 0);
   }
 
-  function renderMeta() {
-    const d = state.data;
-    const list = systemsList();
-    const storms = list.filter((s) => s.kind === "storm").length;
-    const inv = list.length - storms;
-    $("chipSystems").firstChild.textContent = storms || inv
-      ? `${storms} active storm${storms === 1 ? "" : "s"}${inv ? ` · ${inv} invest${inv === 1 ? "" : "s"}` : ""}`
-      : "No active systems";
-    const live = (d.recon?.missions || []).filter(isLive).length;
-    $("chipSystemsSub").textContent = live ? `${live} recon aircraft reporting` : "";
-    $("chipData").firstChild.textContent = `Data ${hhmmZ(d.generated)}`;
-    $("chipDataSub").textContent = `Updated ${ago(d.generated)}`;
-    const stale = Date.now() - new Date(d.generated) > 75 * 60000;
-    $("chipData").classList.toggle("warn", stale);
-    if (stale) $("chipDataSub").textContent = `Last updated ${ago(d.generated)} — collection may be delayed`;
+  function tabForecast(s) {
+    const pts = (state.nhc[s.bin]?.points?.features || []).map((f) => f.properties).sort((a, b) => a.tau - b.tau);
+    const rc = stormRecon(s);
+    let html = "";
+    if (pts.length) {
+      html += `<table class="fc"><thead><tr><th>Valid</th><th>Wind</th><th>Stage</th></tr></thead><tbody>${pts.map((p) => `<tr>
+        <td>${p.tau === 0 ? "Now" : `${p.tau} h`} <span class="dim">${esc(String(p.validtime || "").replace("/", " "))}Z</span></td>
+        <td>${p.maxwind} kt</td>
+        <td><span class="cat" style="background:${ssColor(p.maxwind)}"></span>${esc(catName(p))}</td></tr>`).join("")}</tbody></table>`;
+    } else if (s.kind === "invest") {
+      const last = s.atcf.best.slice(-5).reverse();
+      html += `<table class="fc"><thead><tr><th>Best track</th><th>Wind</th><th>Pressure</th></tr></thead><tbody>${last.map((p) =>
+        `<tr><td>${dayZ(p.t)} <span class="dim">${esc(p.ty)}</span></td><td>${p.vmax ?? "—"} kt</td><td>${p.mslp ? `${p.mslp} mb` : "—"}</td></tr>`).join("")}</tbody></table>
+        <p class="note">Invests have no NHC forecast. Model tracks show ATCF guidance.</p>`;
+    } else {
+      html += `<p class="note">Forecast points are loading from NHC.</p>`;
+    }
+    html += intensityChart(s);
+    const v = rc.vortex[0];
+    if (v) html += `<p class="note"><b>Recon</b> ${dayZ(v.t)} fix: ${esc(v.slpNote.toLowerCase())}${v.maxFl ? `, ${v.maxFl} kt flight-level` : ""}${v.eye ? `, eye ${esc(v.eye.toLowerCase())}` : ""}.</p>`;
+    if (rc.flights.length) html += `<p class="note"><b>Tasked</b> ${rc.flights.map((f) => `${esc(f.aircraft)}, ${esc((f.fields.profile || "mission").toLowerCase())} at ${esc(f.fields.fixTime || "")}`).join("; ")}.</p>`;
+    return html;
   }
 
-  // —— Zoom helpers —————————————————————————————————————————————————
-  function boundsForSystem(id) {
+  function tabGuidance(s) {
+    const m = s.atcf?.models;
+    if (!m) return `<p class="note">No ATCF guidance available.</p>`;
+    const present = Object.keys(m.tracks).filter((t) => MODEL_GROUP_OF[t]);
+    return `<p class="note" style="margin-top:0">Track guidance from the ${new Date(m.cycle).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })} ${hhmmZ(m.cycle)} cycle. Choose which model families appear on the map.</p>
+      <div class="models" style="margin-top:.6rem">${Object.entries(MODEL_GROUPS).map(([k, g]) =>
+        `<label><input type="checkbox" data-group="${k}" ${state.groupsOn[k] ? "checked" : ""}/> ${g.name}</label>`).join("")}</div>
+      <h5 class="sub">Models in this cycle</h5>
+      <div class="models">${present.map((t) => `<span style="opacity:${state.groupsOn[MODEL_GROUP_OF[t]] ? 1 : 0.35}"><i style="background:${MODEL_COLORS[t]}"></i>${t}</span>`).join("")}</div>
+      ${intensityChart(s)}`;
+  }
+
+  function tabRecon(s) {
+    const rc = stormRecon(s);
+    let html = "";
+    if (rc.flights.length) {
+      html += `<h5 class="sub" style="margin-top:0">Tasked · TCPOD ${esc(state.data.tcpod?.number || "")}</h5>` + rc.flights.map((f) => `<div class="flight"><b>${esc(f.aircraft)}</b>
+        <dl class="kv"><dt>Profile</dt><dd>${esc(f.fields.profile)}</dd><dt>Fix time</dt><dd>${esc(f.fields.fixTime)}</dd><dt>Departs</dt><dd>${esc(f.fields.departure)}</dd>
+        <dt>On station</dt><dd>${esc(f.fields.onStation)}</dd><dt>Position</dt><dd>${esc(f.fields.position)}</dd><dt>Altitude</dt><dd>${esc(f.fields.altitude)}</dd><dt>Mission</dt><dd>${esc(f.fields.mission)}</dd></dl></div>`).join("");
+    }
+    if (rc.missions.length) {
+      html += `<h5 class="sub">Flights · last 12 h</h5>` + rc.missions.map((m) => {
+        const o = m.obs[m.obs.length - 1];
+        return `<div class="flight"><b>${esc(m.aircraft)} ${esc(m.missionId)}</b>${isLive(m) ? '<span class="live">LIVE</span>' : ""}
+          <dl class="kv"><dt>Last report</dt><dd>${hhmmZ(o.t)} · ${ago(o.t)}</dd><dt>Position</dt><dd>${ll(o.lat, o.lon)}</dd>
+          <dt>Max FL wind</dt><dd>${m.maxFl ? `${m.maxFl.wspd} kt at ${hhmmZ(m.maxFl.t)}` : "—"}</dd><dt>Max SFMR</dt><dd>${m.maxSfmr ? `${m.maxSfmr.sfmr} kt at ${hhmmZ(m.maxSfmr.t)}` : "—"}</dd></dl></div>`;
+      }).join("");
+    }
+    if (rc.vortex.length) {
+      html += `<h5 class="sub">Vortex fixes</h5><table class="fc"><thead><tr><th>Time</th><th>Pressure</th><th>FL wind</th></tr></thead><tbody>${rc.vortex.slice(0, 6).map((v) =>
+        `<tr><td>${dayZ(v.t)}</td><td>${v.slp ? `${v.slp} mb` : "—"}</td><td>${v.maxFl ? `${v.maxFl} kt` : "—"}</td></tr>`).join("")}</tbody></table>`;
+    }
+    if (!html) html = `<p class="note" style="margin-top:0">No reconnaissance tasked or reported for ${esc(s.name)} in the last 36 hours.</p>`;
+    const pod = state.data.tcpod;
+    if (pod) html += `<details class="more"><summary>Full plan of the day (${esc(pod.number || "")})</summary><pre class="raw">${esc(pod.text)}</pre></details>`;
+    return html;
+  }
+
+  function tabProducts(s) {
+    const L0 = s.links || {};
+    if (s.kind === "invest") return `<p class="note" style="margin-top:0">NHC doesn't issue advisories for invests. See the <a href="https://www.nhc.noaa.gov/gtwo.php" target="_blank" rel="noopener">tropical weather outlook</a>.</p>`;
+    const link = (u, t) => (u ? `<a href="${esc(u)}" target="_blank" rel="noopener">${t}</a>` : "");
+    return `<dl class="kv" style="margin-top:0"><dt>Advisory</dt><dd>${esc(s.advisory || "—")} · ${dayZ(s.lastUpdate)}</dd><dt>Position</dt><dd>${s.lat != null ? ll(s.lat, s.lon) : "—"}</dd>
+      <dt>Movement</dt><dd>${s.movementSpeed ? `${compass(s.movementDir)} ${s.movementSpeed} kt` : "Stationary"}</dd><dt>Max wind</dt><dd>${s.intensity} kt · ${mph(s.intensity)} mph</dd></dl>
+      <div class="links">${link(L0.public, "Public advisory")}${link(L0.discussion, "Discussion")}${link(L0.forecast, "Forecast advisory")}${link(L0.windProbs, "Wind probabilities")}${link(L0.graphics, "NHC graphics")}</div>`;
+  }
+
+  const TABS = [["forecast", "Forecast", tabForecast], ["guidance", "Guidance", tabGuidance], ["recon", "Recon", tabRecon], ["products", "Products", tabProducts]];
+
+  function renderList() {
+    const list = systems().filter((s) => inBasin(s.basin));
+    const areas = outlookAreas().filter((a) => inBasin(a.basin));
+    const sel = state.selected;
+    let html = list.map((s) => {
+      const invest = s.kind === "invest";
+      const open = s.id === sel;
+      const head = `<button class="sys__row" data-id="${esc(s.id)}" aria-expanded="${open}">
+          ${glyph(s.intensity, 24, invest)}
+          <span class="sys__name">${esc(invest ? s.name : s.name)}<small>${esc(CLASS[s.classification] || s.classification || "")} · ${esc(s.id.toUpperCase())}</small></span>
+          <span class="sys__nums"><b>${s.intensity ?? "—"}</b> kt<br>${s.pressure ? `${s.pressure} mb` : "—"}</span></button>`;
+      const tab = TABS.find(([k]) => k === state.tab) || TABS[0];
+      const body = open
+        ? `<div class="detail"><div class="tabs" role="tablist">${TABS.map(([k, t]) => `<button role="tab" data-tab="${k}" aria-selected="${k === tab[0]}">${t}</button>`).join("")}</div>${tab[2](s)}</div>`
+        : `<div class="detail">${intensityChart(s, 120)}</div>`;
+      return `<div class="sys${open ? " sel" : ""}">${head}${body}</div>`;
+    }).join("");
+    html += areas.map((a) => `<div class="sys"><button class="sys__row" data-area="${a.id}">
+        <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="${RISK[a.p.risk7day] || "#ffd84a"}" stroke-width="2.4" stroke-linecap="round"/></svg>
+        <span class="sys__name">${esc(a.title)}<small>7-day outlook · ${esc(BASIN_NAMES[a.basin])}</small></span>
+        <span class="sys__nums"><b>${esc(a.p.prob7day)}</b> 7 d<br>${esc(a.p.prob2day)} 48 h</span></button></div>`).join("");
+    for (const b of state.basin === "ALL" ? ["AL", "EP"] : [state.basin]) {
+      if (list.some((s) => s.basin === b) || areas.some((a) => a.basin === b)) continue;
+      const text = (state.data?.outlooks || []).find((o) => o.basin === b)?.text || "";
+      const quiet = /not expected/i.test(text);
+      html += `<div class="sys quiet"><div class="sys__row" style="cursor:default"><span></span><span class="sys__name">${BASIN_NAMES[b]}<small>${quiet ? "No formation expected · 7 days" : "No active systems"}</small></span><span class="sys__nums">—</span></div></div>`;
+    }
+    $("list").innerHTML = html || `<p class="empty">No systems.</p>`;
+  }
+
+  $("list").addEventListener("click", (e) => {
+    const tab = e.target.closest("[data-tab]");
+    if (tab) { state.tab = tab.dataset.tab; renderList(); return; }
+    const row = e.target.closest("[data-id]");
+    if (row) { select(row.dataset.id === state.selected ? null : row.dataset.id, true); return; }
+    const area = e.target.closest("[data-area]");
+    if (area) {
+      const a = outlookAreas().find((x) => x.id === area.dataset.area);
+      if (a) map.flyToBounds(L.geoJSON(a.feature).getBounds().pad(0.3), { maxZoom: 6, duration: 0.6 });
+    }
+  });
+  $("list").addEventListener("change", (e) => {
+    const g = e.target.dataset?.group;
+    if (!g) return;
+    state.groupsOn[g] = e.target.checked;
+    drawModels();
+    renderList();
+  });
+
+  $("basins").addEventListener("click", (e) => {
+    const b = e.target.dataset?.basin;
+    if (!b) return;
+    state.basin = b;
+    document.querySelectorAll("#basins button").forEach((x) => x.setAttribute("aria-selected", x.dataset.basin === b));
+    const sel = systems().find((s) => s.id === state.selected);
+    if (sel && !inBasin(sel.basin)) select(null);
+    renderList();
+    fitView();
+  });
+
+  $("layers").addEventListener("change", (e) => {
+    const k = e.target.dataset?.layer;
+    if (!k) return;
+    state.on[k] = e.target.checked;
+    if (k === "sat") loadSat(true);
+    else drawAll();
+  });
+
+  function select(id, fly) {
+    state.selected = id;
+    history.replaceState(null, "", id ? `#${id}` : location.pathname + location.search);
+    renderList();
+    drawStorms();
+    drawModels();
+    if (fly) fitView();
+  }
+
+  // —— Drawing ——————————————————————————————————————————————————————
+  function drawStorms() {
+    layers.storms.clearLayers();
+    layers.markers.clearLayers();
+    const sel = state.selected;
+    for (const s of systems()) {
+      const n = state.nhc[s.bin] || {};
+      const isSel = !sel || s.id === sel;
+      const k = isSel ? 1 : 0.35;
+      const g = layers.storms;
+      if (state.on.cone && n.cone) L.geoJSON(n.cone, { pane: "cone", interactive: false, style: { color: "#fff", weight: 1, opacity: 0.75 * k, fillColor: "#fff", fillOpacity: 0.1 * k } }).addTo(g);
+      if (state.on.radii && isSel && n.radii) L.geoJSON(n.radii, {
+        pane: "radii",
+        style: (f) => { const r = f.properties.radii; const c = r >= 64 ? "#ff6b6b" : r >= 50 ? "#ff9548" : "#ffbf47"; return { color: c, weight: 1.2, fillColor: c, fillOpacity: 0.1 }; },
+        onEachFeature: (f, l) => { const p = f.properties; l.bindTooltip(`${p.radii} kt · NE ${p.ne} SE ${p.se} SW ${p.sw} NW ${p.nw} nm`, { className: "tw-tip", sticky: true }); },
+      }).addTo(g);
+      if (state.on.ww && n.ww) L.geoJSON(n.ww, {
+        pane: "lines", style: (f) => ({ color: (WW[f.properties.tcww] || ["#fff"])[0], weight: 5, opacity: k, lineCap: "round" }),
+        onEachFeature: (f, l) => l.bindTooltip((WW[f.properties.tcww] || [, f.properties.tcww])[1], { className: "tw-tip", sticky: true }),
+      }).addTo(g);
+      if (state.on.past && n.past) L.geoJSON(n.past, { pane: "lines", interactive: false, style: { color: "#c9cfe6", weight: 1.6, opacity: 0.6 * k, dashArray: "1 4", lineCap: "round" } }).addTo(g);
+      if (s.kind === "invest" && state.on.past && s.atcf?.best?.length) {
+        L.polyline(s.atcf.best.map((p) => [p.lat, p.lon]), { pane: "lines", interactive: false, color: "#cfd5ef", weight: 1.6, opacity: 0.6 * k, dashArray: "2 5" }).addTo(g);
+      }
+      if (n.track) L.geoJSON(n.track, { pane: "lines", interactive: false, style: { color: "#fff", weight: isSel ? 2 : 1.5, opacity: 0.95 * k } }).addTo(g);
+      if (n.points) L.geoJSON(n.points, {
+        pane: "points", filter: (f) => f.properties.tau > 0,
+        pointToLayer: (f, latlng) => L.circleMarker(latlng, { pane: "points", radius: isSel ? 4.5 : 3, color: "#0b0f26", weight: 1.2, opacity: k, fillOpacity: k, fillColor: ssColor(f.properties.maxwind) }),
+        onEachFeature: (f, l) => {
+          const p = f.properties;
+          l.bindTooltip(`${p.tau} h · ${p.maxwind} kt`, { className: "tw-tip" });
+          l.bindPopup(popup(`${p.stormname} · ${p.tau} h`, [["Valid", esc(p.fldatelbl || p.datelbl)], ["Forecast", esc(p.tcdvlp)],
+            ["Max wind", `${p.maxwind} kt (${mph(p.maxwind)} mph)`], ["Gusts", p.gust ? `${p.gust} kt` : null], ["Position", ll(p.lat, p.lon)], ["Advisory", esc(p.advisnum)]]));
+        },
+      }).addTo(g);
+      if (s.lat == null) continue;
+      const m = L.marker([s.lat, s.lon], {
+        pane: "points", zIndexOffset: isSel ? 1000 : 500, opacity: isSel ? 1 : 0.65, keyboard: true, title: s.name,
+        icon: L.divIcon({ className: "", html: glyph(s.intensity, 26, s.kind === "invest"), iconSize: [26, 26], iconAnchor: [13, 13] }),
+      }).addTo(layers.markers);
+      m.bindTooltip(s.name, { permanent: true, direction: "right", offset: [14, 0], className: "tw-label", pane: "labels", opacity: isSel ? 1 : 0.6 });
+      m.on("click", () => select(s.id === state.selected ? null : s.id, false));
+    }
+  }
+
+  function drawModels() {
+    layers.models.clearLayers();
+    if (!state.on.models) return;
+    // Guidance for the selected system, or for every system when nothing is selected (consensus only then).
+    const list = systems().filter((s) => (state.selected ? s.id === state.selected : true));
+    for (const s of list) {
+      const m = s.atcf?.models;
+      if (!m) continue;
+      for (const [tech, pts] of Object.entries(m.tracks)) {
+        const grp = MODEL_GROUP_OF[tech];
+        if (!grp || !state.groupsOn[grp] || (!state.selected && grp !== "consensus")) continue;
+        const c = MODEL_COLORS[tech];
+        L.polyline(pts.map((p) => [p.lat, p.lon]), { pane: "lines", color: c, weight: grp === "consensus" ? 2 : 1.3, opacity: grp === "simple" ? 0.6 : 0.85, dashArray: grp === "simple" ? "4 4" : null })
+          .bindTooltip(`${tech} · ${hhmmZ(m.cycle)} · ${pts[pts.length - 1].tau} h`, { className: "tw-tip", sticky: true }).addTo(layers.models);
+      }
+    }
+  }
+
+  function obRows(o) {
+    return [["Time", dayZ(o.t)], ["Position", ll(o.lat, o.lon)], ["Altitude", o.alt != null ? `${o.alt.toLocaleString()} m` : null],
+      ["FL wind", o.wspd != null ? `${String(o.wdir).padStart(3, "0")}° ${o.wspd} kt` : null], ["SFMR", o.sfmr != null ? `${o.sfmr} kt` : null], ["Extrap. SLP", o.slp != null ? `${o.slp} mb` : null]];
+  }
+
+  function drawRecon() {
+    layers.recon.clearLayers();
+    if (!state.on.recon || !state.data) return;
+    const r = state.data.recon || {};
+    for (const m of r.missions || []) {
+      if (m.obs.length < 2) continue;
+      const live = isLive(m);
+      L.polyline(m.obs.map((o) => [o.lat, o.lon]), { pane: "recon", color: RECON, weight: 1.3, opacity: live ? 0.75 : 0.4, interactive: false }).addTo(layers.recon);
+      m.obs.forEach((o, i) => {
+        if (i % 3) return;
+        L.circleMarker([o.lat, o.lon], { pane: "recon", radius: 2.5, weight: 0, fillColor: RECON, fillOpacity: 0 })
+          .bindPopup(popup(`${m.aircraft} · ${m.storm}`, obRows(o))).addTo(layers.recon);
+      });
+      const a = m.obs[m.obs.length - 2], b = m.obs[m.obs.length - 1];
+      const hdg = Math.atan2((b.lon - a.lon) * Math.cos(b.lat * Math.PI / 180), b.lat - a.lat) * 180 / Math.PI;
+      L.marker([b.lat, b.lon], {
+        pane: "points", title: `${m.aircraft} ${m.storm}`,
+        icon: L.divIcon({ className: "", iconSize: [14, 14], iconAnchor: [7, 7],
+          html: `<svg width="14" height="14" viewBox="0 0 14 14" style="transform:rotate(${hdg}deg);opacity:${live ? 1 : 0.55}"><path d="M7 1 L12 12 L7 9.5 L2 12 Z" fill="${RECON}" stroke="#060818" stroke-width="1"/></svg>` }),
+      }).bindTooltip(`${m.aircraft} · ${hhmmZ(b.t)}${live ? "" : " (ended)"}`, { className: "tw-tip", direction: "top", offset: [0, -8] })
+        .bindPopup(popup(`${m.aircraft} · ${m.missionId} ${m.storm}`, [["Status", live ? "Reporting" : `Last report ${ago(m.last)}`], ...obRows(b),
+          ["Max FL wind", m.maxFl ? `${m.maxFl.wspd} kt at ${hhmmZ(m.maxFl.t)}` : null], ["Max SFMR", m.maxSfmr ? `${m.maxSfmr.sfmr} kt at ${hhmmZ(m.maxSfmr.t)}` : null]]))
+        .addTo(layers.recon);
+    }
+    for (const v of (r.vortex || []).slice(0, 8)) {
+      L.circleMarker([v.lat, v.lon], { pane: "recon", radius: 4, color: RECON, weight: 1.5, fillOpacity: 0 })
+        .bindTooltip(`Vortex fix ${dayZ(v.t)}${v.slp ? ` · ${v.slp} mb` : ""}`, { className: "tw-tip" })
+        .bindPopup(popup(`Vortex fix · ${v.storm}`, [["Time", dayZ(v.t)], ["Center", ll(v.lat, v.lon)], ["Pressure", esc(v.slpNote)],
+          ["Max FL wind", v.maxFl ? `${v.maxFl} kt` : null], ["Eye", esc([v.eye, v.eyeSize].filter(Boolean).join(" · "))], ["Mission", esc(v.mission)]]))
+        .addTo(layers.recon);
+    }
+    for (const b of state.data.tcpod?.basins || []) {
+      for (const s of b.systems) {
+        for (const f of s.flights) {
+          if (f.lat == null) continue;
+          L.marker([f.lat, f.lon], {
+            pane: "points",
+            icon: L.divIcon({ className: "", iconSize: [22, 22], iconAnchor: [11, 11], html: `<svg width="22" height="22" viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" fill="none" stroke="${RECON}" stroke-width="1.6" stroke-dasharray="3 3"/><path d="M11 5v3M11 14v3M5 11h3M14 11h3" stroke="${RECON}" stroke-width="1.6"/></svg>` }),
+          }).bindTooltip(`Tasked: ${esc(f.aircraft)} · ${esc(f.fields.fixTime || "")}`, { className: "tw-tip" })
+            .bindPopup(popup(`TCPOD · ${s.name}`, [["Aircraft", esc(f.aircraft)], ["Fix time", esc(f.fields.fixTime)], ["Profile", esc(f.fields.profile)],
+              ["Departs", esc(f.fields.departure)], ["On station", esc(f.fields.onStation)], ["Altitude", esc(f.fields.altitude)], ["Mission", esc(f.fields.mission)]]))
+            .addTo(layers.recon);
+        }
+      }
+    }
+  }
+
+  function drawOutlook() {
+    layers.outlook.clearLayers();
+    if (!state.on.outlook) return;
+    for (const a of outlookAreas()) {
+      const c = RISK[a.p.risk7day] || "#ffd84a";
+      L.geoJSON(a.feature, { pane: "outlook", style: { color: c, weight: 1.4, dashArray: "5 5", fillColor: c, fillOpacity: 0.07 } })
+        .bindPopup(popup(a.title, [["48 hours", `${esc(a.p.prob2day)} (${esc(a.p.risk2day)})`], ["7 days", `${esc(a.p.prob7day)} (${esc(a.p.risk7day)})`]]))
+        .addTo(layers.outlook);
+    }
+    (state.gtwo?.pts?.features || []).forEach((f) => {
+      const c = RISK[f.properties.risk7day] || "#ffd84a";
+      L.marker([f.geometry.coordinates[1], f.geometry.coordinates[0]], { pane: "outlook", interactive: false,
+        icon: L.divIcon({ className: "", iconSize: [18, 18], iconAnchor: [9, 9], html: `<svg width="18" height="18" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="${c}" stroke-width="3" stroke-linecap="round"/></svg>` }) }).addTo(layers.outlook);
+    });
+  }
+
+  function drawAll() { drawOutlook(); drawStorms(); drawModels(); drawRecon(); }
+
+  function fitView() {
+    const sel = systems().find((s) => s.id === state.selected);
     const b = L.latLngBounds([]);
-    const s = systemsList().find((x) => x.id === id);
-    if (!s) return b;
-    if (s.lat != null) b.extend([s.lat, s.lon]);
-    const nhc = s.bin && state.nhc[s.bin];
-    if (nhc?.cone) b.extend(L.geoJSON(nhc.cone).getBounds());
-    const consensus = s.atcf?.models?.tracks?.TVCN || s.atcf?.models?.tracks?.IVCN;
-    if (consensus) consensus.forEach((p) => b.extend([p.lat, p.lon]));
-    return b;
+    const add = (s) => {
+      if (s.lat != null) b.extend([s.lat, s.lon]);
+      const n = state.nhc[s.bin];
+      if (n?.cone?.features?.length) b.extend(L.geoJSON(n.cone).getBounds());
+      else (s.atcf?.models?.tracks?.TVCN || []).forEach((p) => b.extend([p.lat, p.lon]));
+    };
+    if (sel) add(sel);
+    else systems().filter((s) => inBasin(s.basin)).forEach(add);
+    if (b.isValid()) map.flyToBounds(b.pad(0.2), { maxZoom: 6, duration: 0.6, paddingTopLeft: [0, 0], paddingBottomRight: [0, 50] });
+    else map.flyToBounds(BASIN_BOUNDS[state.basin], { duration: 0.6 });
   }
 
-  function zoomTo(id) {
-    const b = boundsForSystem(id);
-    if (b.isValid()) {
-      map.flyToBounds(b.pad(0.25), { maxZoom: 6, duration: 0.8 });
-      $("map").scrollIntoView({ behavior: "smooth", block: "center" });
-    }
+  function renderUpdated() {
+    const d = state.data;
+    if (!d) return;
+    const el = $("updated");
+    const stale = Date.now() - new Date(d.generated) > 75 * 60000;
+    el.textContent = stale ? `Data ${hhmmZ(d.generated)} · delayed` : `Data ${hhmmZ(d.generated)}`;
+    el.title = `Collected ${new Date(d.generated).toUTCString()}`;
+    el.classList.toggle("stale", stale);
   }
 
-  function zoomBasin(key) {
-    document.querySelectorAll("#basins button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.basin === key));
-    if (key === "active") {
-      const b = L.latLngBounds([]);
-      systemsList().forEach((s) => { const sb = boundsForSystem(s.id); if (sb.isValid()) b.extend(sb); });
-      (state.data?.recon?.missions || []).filter(isLive).forEach((m) => { const o = m.obs[m.obs.length - 1]; b.extend([o.lat, o.lon]); });
-      if (b.isValid()) { map.flyToBounds(b.pad(0.15), { maxZoom: 6, duration: 0.8 }); return; }
-      key = "ALL";
-    }
-    map.flyToBounds(BASIN_BOUNDS[key], { duration: 0.8 });
-  }
-  document.querySelectorAll("#basins button").forEach((b) => { b.onclick = () => zoomBasin(b.dataset.basin); });
-
-  // —— Load & refresh ——————————————————————————————————————————————
+  // —— Load & refresh ———————————————————————————————————————————————
   async function loadData() {
     const res = await fetch(`data/tropical.json?t=${Date.now()}`, { cache: "no-store" });
     if (!res.ok) throw new Error(res.status);
     const data = await res.json();
     const changed = !state.data || data.generated !== state.data.generated;
     state.data = data;
-    renderMeta();
-    if (!changed) return false;
-    drawModels();
-    drawInvests();
-    drawRecon();
-    drawStormMarkers();
-    renderStorms();
-    renderPod();
-    renderRecon();
-    renderOutlooks();
-    return true;
+    renderUpdated();
+    return changed;
   }
 
   async function init() {
-    setSatellite("ir");
+    loadSat(true);
     setStatus("Loading tropical data…");
-    let first = true;
-    try {
-      await loadData();
-    } catch (e) {
-      $("chipSystems").firstChild.textContent = "Data unavailable";
-      ["storms", "pod", "recon"].forEach((id) => { $(id).innerHTML = `<p class="tw-empty">Couldn't load the latest data. Try again in a few minutes.</p>`; });
-      $("twoText").textContent = "";
+    const [dataOk, nhcOk] = await Promise.all([loadData().then(() => true, () => false), loadNhc().then(() => true, () => false)]);
+    if (!dataOk) {
+      $("list").innerHTML = `<p class="empty">Couldn't load the latest data. Try again in a few minutes.</p>`;
+      setStatus("Data unavailable");
+      return;
     }
-    try {
-      await loadNhc();
-    } catch (e) {
-      setStatus("NHC map service unavailable — cones and warnings not shown");
-      first = false;
-    }
-    if (first) setStatus("");
-    if (state.data) zoomBasin("active");
+    setStatus(nhcOk ? "" : "NHC map service unavailable — cones and warnings not shown");
+    const list = systems();
+    if (state.selected && !list.some((s) => s.id === state.selected)) state.selected = null;
+    // Open the strongest storm by default so the sidebar shows something useful.
+    if (!state.selected && list.length && !hashId) state.selected = list[0].id;
+    renderList();
+    drawAll();
+    fitView();
 
-    // Refresh: data file every 5 min, NHC layers every 10, satellite frames every 5.
-    setInterval(() => loadData().catch(() => {}), 5 * 60000);
-    setInterval(() => loadNhc().then(() => setStatus("")).catch(() => {}), 10 * 60000);
-    setInterval(() => {
-      if (state.satKind !== "off" && !state.satTimer) setSatellite(state.satKind);
-      if (state.data) renderMeta();
+    setInterval(async () => {
+      if (await loadData().catch(() => false)) {
+        if (state.selected && !systems().some((s) => s.id === state.selected)) state.selected = null;
+        renderList(); drawAll();
+      }
     }, 5 * 60000);
+    setInterval(() => loadNhc().then(() => { setStatus(""); renderList(); drawAll(); }).catch(() => {}), 10 * 60000);
+    setInterval(() => { if (!state.sat.timer) loadSat(false); renderUpdated(); }, 10 * 60000);
   }
 
   init();
