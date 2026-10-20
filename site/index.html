@@ -75,6 +75,10 @@
           <label><input type="checkbox" data-layer="windprob" /> Wind probabilities</label>
           <label><input type="checkbox" data-layer="arrival" /> TS wind arrival</label>
           <label><input type="checkbox" data-layer="surge" /> Peak storm surge</label>
+          <label><input type="checkbox" data-layer="rain" /> Rainfall (7 days)</label>
+          <label><input type="checkbox" data-layer="ero" /> Flash flood risk</label>
+          <label><input type="checkbox" data-layer="buoys" /> Buoys</label>
+          <label><input type="checkbox" data-layer="sst" /> Sea temperature</label>
         </div>
         <div class="satpick" id="windkt" role="group" aria-label="Wind probability threshold"><span>Wind probability</span><button data-kt="34" aria-pressed="true">34 kt</button><button data-kt="50" aria-pressed="false">50 kt</button><button data-kt="64" aria-pressed="false">64 kt</button></div>
         <div class="satpick" id="satpick" role="group" aria-label="Satellite product">
@@ -103,6 +107,6 @@
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="app.js?v=8"></script>
+  <script src="app.js?v=9"></script>
 </body>
 </html>

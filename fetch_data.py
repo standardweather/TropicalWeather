@@ -8,6 +8,7 @@ them directly. This script runs in GitHub Actions on a schedule and gathers:
   * best tracks / guidance  ftp.nhc.noaa.gov/atcf (btk + aid_public), incl. invests
   * aircraft tasking        TCPOD (NOUS42 KNHC REPRPD) from tgftp.nws.noaa.gov
   * recon observations      HDOBs and vortex messages from www.nhc.noaa.gov/archive/recon
+  * buoys and C-MAN         latest observations from www.ndbc.noaa.gov/data/latest_obs
 
 Cones, tracks, warnings and outlook areas are drawn live in the browser from
 NOAA's tropical MapServer, which does allow cross-origin requests.
@@ -33,12 +34,15 @@ NOW = datetime.now(timezone.utc)
 
 NHC = "https://www.nhc.noaa.gov"
 ATCF = "https://ftp.nhc.noaa.gov/atcf"
+NDBC_URL = "https://www.ndbc.noaa.gov/data/latest_obs/latest_obs.txt"
 TCPOD_URL = "https://tgftp.nws.noaa.gov/data/raw/no/nous42.knhc.rep.rpd.txt"
 RECON = f"{NHC}/archive/recon/{NOW.year}"
 
 INVEST_MAX_AGE = timedelta(hours=36)   # b-deck must have a fix this recent
 HDOB_WINDOW = timedelta(hours=12)
 VORTEX_WINDOW = timedelta(hours=36)
+BUOY_WINDOW = timedelta(hours=3)
+BUOY_AREA = (0, 55, -180, -5)          # lat min/max, lon min/max: the NHC and CPHC basins
 
 # Guidance worth drawing on the map. Interpolated ("early") aids plus the
 # official forecast and consensus; anything not listed is left out.
@@ -516,14 +520,47 @@ def vortex():
 
 # —— Main —————————————————————————————————————————————————————————————
 
+def buoys():
+    """Latest NDBC buoy and coastal station reports in the basins, as compact rows.
+
+    Each row: [id, lat, lon, time, wind dir, wind kt, gust kt, wave ft, pressure mb, water temp C].
+    """
+    def num(v, scale=1.0, nd=0):
+        if v == "MM":
+            return None
+        x = float(v) * scale
+        return round(x, nd) if nd else round(x)
+    out = []
+    lat0, lat1, lon0, lon1 = BUOY_AREA
+    for line in get(NDBC_URL).splitlines():
+        if line.startswith("#"):
+            continue
+        c = line.split()
+        if len(c) < 19:
+            continue
+        lat, lon = float(c[1]), float(c[2])
+        if not (lat0 <= lat <= lat1 and lon0 <= lon <= lon1):
+            continue
+        t = datetime(*map(int, c[3:8]), tzinfo=timezone.utc)
+        if NOW - t > BUOY_WINDOW:
+            continue
+        wspd, gst = num(c[9], 1.94384), num(c[10], 1.94384)
+        pres, wvht = num(c[15], nd=1), num(c[11], 3.28084, 1)
+        if wspd is None and pres is None and wvht is None:
+            continue
+        out.append([c[0], lat, lon, iso(t), num(c[8]), wspd, gst, wvht, pres, num(c[17], nd=1)])
+    return out
+
+
 def main():
     storms = safe("CurrentStorms.json", current_storms, [])
-    with ThreadPoolExecutor(5) as ex:
+    with ThreadPoolExecutor(6) as ex:
         f_sys = ex.submit(atcf_systems, storms)
         f_pod = ex.submit(safe, "TCPOD", tcpod)
         f_two = ex.submit(safe, "outlooks", outlooks, [])
         f_hdob = ex.submit(safe, "HDOBs", hdobs, [])
         f_vtx = ex.submit(safe, "vortex messages", vortex, [])
+        f_buoy = ex.submit(safe, "NDBC buoys", buoys, [])
         data = {
             "generated": iso(NOW),
             "storms": storms,
@@ -531,13 +568,14 @@ def main():
             "tcpod": f_pod.result(),
             "outlooks": f_two.result(),
             "recon": {"missions": f_hdob.result(), "vortex": f_vtx.result()},
+            "buoys": f_buoy.result(),
             "errors": errors,
         }
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(data, separators=(",", ":")))
     print(f"wrote {OUT} ({OUT.stat().st_size // 1024} KB): {len(storms)} storms, "
           f"{len(data['systems'])} ATCF systems, {len(data['recon']['missions'])} recon missions, "
-          f"{len(data['recon']['vortex'])} vortex fixes, {len(errors)} errors")
+          f"{len(data['recon']['vortex'])} vortex fixes, {len(data['buoys'])} buoys, {len(errors)} errors")
 
 
 if __name__ == "__main__":
