@@ -3,6 +3,9 @@
  * Live in the browser (these services allow cross-origin requests):
  *   NHC tropical MapServer  cones, forecast/past tracks, watches & warnings, wind field, 7-day outlook areas
  *   NASA GIBS GOES tiles    IR / visible / GeoColor / air mass, 10-minute full-disk frames
+ *   NHC map service images  wind-speed probabilities, arrival time of TS-force winds, peak storm surge (inundation)
+ * Built by build_hurdat.py from NOAA/NHC HURDAT2 into hurdat/atl.json and hurdat/pac.json:
+ *   historical best tracks (Atlantic since 1851, Pacific since 1949) for the Past storms view
  * Collected every ~15 min by GitHub Actions into data/tropical.json (fetch_data.py):
  *   NHC CurrentStorms, ATCF best tracks + guidance, TCPOD, recon HDOBs + vortex messages, outlook text
  */
@@ -82,7 +85,10 @@
     basin: "ALL",
     selected: null,
     tab: "forecast",
-    on: { cone: true, ww: true, models: true, past: true, recon: true, outlook: true, radii: false, sat: true },
+    on: { cone: true, ww: true, models: true, past: true, recon: true, outlook: true, radii: false, sat: true, windprob: false, arrival: false, surge: false },
+    windKt: 34,
+    mode: "active",
+    hist: { data: {}, q: "", selected: null, near: null },
     groupsOn: Object.fromEntries(Object.entries(MODEL_GROUPS).map(([k, v]) => [k, v.on])),
     sat: { kind: "ir", times: [], layers: [], idx: 0, timer: null, opacity: 0.85 },
     fitted: false,
@@ -90,6 +96,7 @@
 
   // Restore selection from the URL (#ep212026) so a view can be shared.
   const hashId = location.hash.slice(1).toLowerCase();
+  const pastHash = /^past-(al|ep|cp)\d{6}$/.test(hashId) ? hashId.slice(5).toUpperCase() : null;
   if (/^(al|ep|cp)\d{6}$/.test(hashId)) state.selected = hashId;
 
   // —— Map ————————————————————————————————————————————————————————
@@ -104,6 +111,7 @@
   map.attributionControl.addAttribution("NOAA/NHC · GOES via NASA GIBS · ATCF");
 
   const layers = {
+    hist: L.layerGroup(),
     outlook: L.layerGroup().addTo(map),
     storms: L.layerGroup().addTo(map),   // cones, tracks, warnings — rebuilt on selection
     models: L.layerGroup().addTo(map),
@@ -200,7 +208,7 @@
     if (force) $("t1").textContent = `${sat.name} loading…`;
     try {
       const newest = await satNewest(sat);
-      if (kind !== s.kind || !state.on.sat) return;
+      if (kind !== s.kind || !state.on.sat || state.mode === "past") return;   // Past storms hides today's satellite
       const times = Array.from({ length: SAT_FRAMES }, (_, i) => isoMin(newest - (SAT_FRAMES - 1 - i) * SAT_STEP));
       if (!force && times[times.length - 1] === s.times[s.times.length - 1]) return;   // nothing new
       clearSat();
@@ -442,9 +450,219 @@
       <div class="links">${link(L0.public, "Public advisory")}${link(L0.discussion, "Discussion")}${link(L0.forecast, "Forecast advisory")}${link(L0.windProbs, "Wind probabilities")}${link(L0.graphics, "NHC graphics")}</div>`;
   }
 
+  // —— NHC layers drawn by the map service (official colors) ——————————————————
+  // ArcGIS "export" renders the requested layers as an image; one request per 256-px map tile.
+  const NhcExport = L.TileLayer.extend({
+    getTileUrl(c) {
+      const size = this.getTileSize();
+      const nw = map.unproject([c.x * size.x, c.y * size.y], c.z);
+      const se = map.unproject([(c.x + 1) * size.x, (c.y + 1) * size.y], c.z);
+      const a = L.CRS.EPSG3857.project(nw), b = L.CRS.EPSG3857.project(se);
+      return `${MS}/export?bbox=${a.x},${b.y},${b.x},${a.y}&bboxSR=3857&imageSR=3857&size=${size.x},${size.y}&layers=show:${this.options.ids}&format=png32&transparent=true&dpi=96&f=image&_=${this.options.stamp}`;
+    },
+  });
+  const nhcLayers = {};
+  const NhcLegend = L.Control.extend({ options: { position: "bottomright" }, onAdd() { const d = L.DomUtil.create("div", "maplegend"); d.id = "nhcLegend"; return d; } });
+  new NhcLegend().addTo(map);
+  function nhcIds(kind) {
+    const ids = state.layerIds || {};
+    const bins = Object.keys(state.nhc);
+    if (kind === "windprob") return [{ 34: 395, 50: 396, 64: 397 }[state.windKt]];
+    if (kind === "arrival") return bins.map((b) => ids[`${b} Most Likely Arrival Time`]).filter((x) => x != null);
+    if (kind === "surge") return bins.filter((b) => b.startsWith("AT")).map((b) => ids[`Image_Inun_${b}`]).filter((x) => x != null);
+    return [];
+  }
+  function drawNhcLayers() {
+    for (const kind of ["windprob", "arrival", "surge"]) {
+      nhcLayers[kind]?.remove();
+      delete nhcLayers[kind];
+      const ids = nhcIds(kind);
+      if (!state.on[kind] || state.mode !== "active" || !ids.length) continue;
+      nhcLayers[kind] = new NhcExport("", { ids: ids.join(","), stamp: Math.floor(Date.now() / 600000), pane: "radii", opacity: kind === "windprob" ? 0.6 : 0.85, attribution: "" }).addTo(map);
+    }
+    drawNhcLegend();
+  }
+  // Legend swatches come from the map service too.
+  let nhcLegend = null;
+  async function drawNhcLegend() {
+    const el = $("nhcLegend");
+    if (!el) return;
+    const want = ["windprob", "arrival", "surge"].filter((k) => state.on[k] && state.mode === "active");
+    if (!want.length) { el.innerHTML = ""; return; }
+    if (!nhcLegend) nhcLegend = await fetch(`${MS}/legend?f=json`).then((r) => r.json()).then((d) => Object.fromEntries(d.layers.map((l) => [l.layerId, l]))).catch(() => ({}));
+    const titles = { windprob: `Chance of ${state.windKt}-kt winds (5 days)`, arrival: "Most likely arrival of TS-force winds", surge: "Peak storm surge (ft above ground)" };
+    el.innerHTML = want.map((k) => {
+      const ids = nhcIds(k);
+      if (!ids.length) return `<h5 class="sub">${titles[k]}</h5><p class="note" style="margin:0">Not issued for current storms.</p>`;
+      const lg = nhcLegend[ids[0]];
+      return `<h5 class="sub">${titles[k]}</h5><div class="key">${(lg?.legend || []).slice(0, 11).map((x) => `<span><img alt="" src="data:${x.contentType};base64,${x.imageData}" width="14" height="14" style="vertical-align:-3px;margin-right:.3rem">${esc(x.label || "")}</span>`).join("")}</div>`;
+    }).join("");
+  }
+  $("windkt").addEventListener("click", (e) => {
+    const v = +e.target.closest("[data-kt]")?.dataset.kt;
+    if (!v) return;
+    state.windKt = v;
+    document.querySelectorAll("#windkt [data-kt]").forEach((b) => b.setAttribute("aria-pressed", +b.dataset.kt === v));
+    if (!state.on.windprob) { state.on.windprob = true; document.querySelector('[data-layer="windprob"]').checked = true; }
+    drawNhcLayers();
+  });
+
+  // —— Past storms (NOAA/NHC HURDAT2) ——————————————————————————————————————
+  const histFile = (b) => (b === "AL" ? "atl" : "pac");
+  async function loadHurdat(file) {
+    if (!state.hist.data[file]) {
+      state.hist.data[file] = fetch(`hurdat/${file}.json`).then((r) => r.json()).then((d) => {
+        d.storms.forEach((st) => { st.basin = st.id.slice(0, 2); });
+        return d;
+      });
+    }
+    return state.hist.data[file];
+  }
+  async function histStorms() {
+    const files = state.basin === "ALL" ? ["atl", "pac"] : [histFile(state.basin)];
+    const sets = await Promise.all(files.map(loadHurdat));
+    return sets.flatMap((d) => d.storms).filter((st) => state.basin === "ALL" || st.basin === state.basin);
+  }
+  const ptTime = (n) => { const s2 = String(n); return Date.UTC(+s2.slice(0, 4), +s2.slice(4, 6) - 1, +s2.slice(6, 8), +s2.slice(8, 10), +s2.slice(10, 12)); };
+  const ptLabel = (n) => { const d = new Date(ptTime(n)); return `${d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })} ${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}Z`; };
+  const STATUS = { HU: "Hurricane", TS: "Tropical storm", TD: "Tropical depression", EX: "Extratropical", SD: "Subtropical depression", SS: "Subtropical storm", LO: "Low", WV: "Wave", DB: "Disturbance" };
+  const catOf = (kt) => (kt == null ? "—" : kt >= 64 ? `Cat ${ssLabel(kt)}` : kt >= 34 ? "TS" : "TD");
+
+  function histRow(st) {
+    const sel = state.hist.selected?.id === st.id;
+    const first = st.pts[0], last = st.pts[st.pts.length - 1];
+    return `<div class="sys${sel ? " sel" : ""}"><button class="sys__row" data-hstorm="${esc(st.id)}">
+        ${glyph(st.peak, 24)}
+        <span class="sys__name">${esc(st.name)}<small>${esc(st.id)} · ${ptLabel(first[0]).replace(/ \d{4}Z$/, "")} – ${ptLabel(last[0]).replace(/, \d{4} \d{4}Z$/, "")}${st.landfall ? " · landfall" : ""}${st.near != null ? ` · ${Math.round(st.near * 0.621)} mi away` : ""}</small></span>
+        <span class="sys__nums"><b>${st.peak ?? "—"}</b> kt<br>${st.minp ? `${st.minp} mb` : "—"}</span></button>${sel ? histDetail(st) : ""}</div>`;
+  }
+
+  function histDetail(st) {
+    const lf = st.pts.filter((p) => p[6] === "L");
+    return `<div class="detail">
+      <dl class="kv"><dt>Peak</dt><dd>${st.peak ?? "—"} kt · ${catOf(st.peak)}${st.peak ? ` · ${mph(st.peak)} mph` : ""}</dd><dt>Lowest pressure</dt><dd>${st.minp ? `${st.minp} mb` : "not recorded"}</dd>
+        <dt>Track</dt><dd>${ptLabel(st.pts[0][0])} – ${ptLabel(st.pts[st.pts.length - 1][0])}</dd></dl>
+      ${lf.length ? `<h5 class="sub">Landfalls</h5><table class="fc"><tbody>${lf.map((p) => `<tr><td>${ptLabel(p[0])}</td><td>${ll(p[1], p[2])}</td><td>${p[3]} kt · ${catOf(p[3])}</td></tr>`).join("")}</tbody></table>` : `<p class="note">No landfall in the record.</p>`}
+      <details class="more"><summary>All ${st.pts.length} best-track points</summary><table class="fc" style="margin-top:.4rem"><thead><tr><th>Time</th><th>Position</th><th>Wind</th><th>Pressure</th></tr></thead><tbody>
+        ${st.pts.map((p) => `<tr><td>${ptLabel(p[0])}<span class="dim"> ${esc(p[5])}</span></td><td>${ll(p[1], p[2])}</td><td>${p[3] ?? "—"}</td><td>${p[4] ?? "—"}</td></tr>`).join("")}</tbody></table></details>
+      <p class="note">NOAA/NHC HURDAT2 best track. <a href="https://www.nhc.noaa.gov/data/tcr/" target="_blank" rel="noopener">Tropical Cyclone Reports ↗</a></p></div>`;
+  }
+
+  async function renderPast() {
+    const box = $("list");
+    if (!box.querySelector("#pq")) {
+      box.innerHTML = `<form class="search" id="pastSearch"><input id="pq" placeholder="Name or year, e.g. Katrina or 2005" autocomplete="off" value="${esc(state.hist.q)}" /></form>
+        <p class="note" style="padding:0 1.25rem">Or click the map to list storms that passed within 50 miles.</p><div id="pastResults"><p class="empty">Loading the best-track archive…</p></div>`;
+    }
+    const all = await histStorms();
+    const q = state.hist.q.trim().toLowerCase();
+    let list, heading;
+    if (state.hist.near) {
+      const { lat, lon } = state.hist.near;
+      list = all.map((st) => ({ ...st, near: nearestKm(st, lat, lon) })).filter((st) => st.near <= 80).sort((a, b) => b.year - a.year || a.near - b.near);
+      heading = `${list.length} storms within 50 miles of ${ll(lat, lon)} <a href="#" data-clearnear="1">clear</a>`;
+    } else if (/^\d{4}$/.test(q)) {
+      list = all.filter((st) => st.year === +q).sort((a, b) => a.pts[0][0] - b.pts[0][0]);
+      heading = `${list.length} storms in ${q}`;
+    } else if (q) {
+      list = all.filter((st) => st.name.toLowerCase().includes(q)).slice(0, 80);
+      heading = `${list.length} storms named “${esc(state.hist.q)}”`;
+    } else {
+      const latest = Math.max(...all.map((st) => st.year));
+      list = all.filter((st) => st.year === latest).sort((a, b) => a.pts[0][0] - b.pts[0][0]);
+      heading = `${latest} season · ${list.length} storms`;
+    }
+    $("pastResults").innerHTML = `<h5 class="sub" style="padding:.6rem 1.25rem 0">${heading}</h5>` + (list.map(histRow).join("") || `<p class="empty">No storms found.</p>`);
+  }
+
+  // Distance (km) from a point to the nearest segment of a track (equirectangular, fine at these scales).
+  function nearestKm(st, lat, lon) {
+    const k = Math.cos((lat * Math.PI) / 180) * 111.32;
+    let best = Infinity;
+    for (let i = 0; i < st.pts.length; i++) {
+      const ax = (st.pts[i][2] - lon) * k, ay = (st.pts[i][1] - lat) * 110.57;
+      const b = st.pts[i + 1] || st.pts[i];
+      const bx = (b[2] - lon) * k, by = (b[1] - lat) * 110.57;
+      const dx = bx - ax, dy = by - ay;
+      const t = dx || dy ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / (dx * dx + dy * dy))) : 0;
+      best = Math.min(best, Math.hypot(ax + t * dx, ay + t * dy));
+    }
+    return best;
+  }
+
+  function drawHist() {
+    layers.hist.clearLayers();
+    const st = state.hist.selected;
+    if (!st) return;
+    for (let i = 0; i + 1 < st.pts.length; i++) {
+      const a = st.pts[i], b = st.pts[i + 1];
+      L.polyline([[a[1], a[2]], [b[1], b[2]]], { pane: "lines", color: ssColor(a[3]), weight: 3, opacity: /EX|LO|WV|DB/.test(a[5]) ? 0.45 : 0.95, dashArray: /EX|LO|WV|DB/.test(a[5]) ? "4 4" : null, interactive: false }).addTo(layers.hist);
+    }
+    st.pts.forEach((p) => {
+      const lf = p[6] === "L";
+      L.circleMarker([p[1], p[2]], { pane: "points", radius: lf ? 6 : 3.5, color: lf ? "#fff" : "#0b0f26", weight: lf ? 2 : 1, fillColor: ssColor(p[3]), fillOpacity: 1 })
+        .bindTooltip(`${ptLabel(p[0])} · ${STATUS[p[5]] || p[5]} · ${p[3] ?? "—"} kt${p[4] ? ` · ${p[4]} mb` : ""}${lf ? " · landfall" : ""}`, { className: "tw-tip" })
+        .addTo(layers.hist);
+    });
+  }
+
+  async function selectHist(id, fly, instant) {
+    const all = await histStorms();
+    const st = all.find((x) => x.id === id) || null;
+    state.hist.selected = state.hist.selected?.id === id ? null : st;
+    history.replaceState(null, "", state.hist.selected ? `#past-${id}` : location.pathname + location.search);
+    drawHist();
+    await renderPast();
+    document.querySelector("#pastResults .sys.sel")?.scrollIntoView({ block: "nearest" });
+    if (state.hist.selected && fly) {
+      const b = L.latLngBounds(state.hist.selected.pts.map((p) => [p[1], p[2]])).pad(0.15);
+      // Opening a shared link: no animation, since the archive is still parsing and could strand it mid-zoom.
+      instant ? map.fitBounds(b, { maxZoom: 6, animate: false }) : map.flyToBounds(b, { maxZoom: 6, duration: 0.6 });
+    }
+  }
+
+  function setMode(m, quiet) {
+    state.mode = m;
+    document.querySelectorAll("#modes button").forEach((b) => b.setAttribute("aria-selected", b.dataset.mode === m));
+    for (const k of ["outlook", "storms", "models", "recon", "markers"]) m === "active" ? layers[k].addTo(map) : layers[k].remove();
+    m === "past" ? layers.hist.addTo(map) : layers.hist.remove();
+    drawNear();
+    // Today's satellite would be misleading behind a historical track.
+    $("scrub").hidden = m === "past";
+    if (m === "past") clearSat(); else if (state.on.sat) loadSat(true);
+    $("list").innerHTML = "";
+    drawNhcLayers();
+    if (m === "past") renderPast(); else { history.replaceState(null, "", state.selected ? `#${state.selected}` : location.pathname); renderList(); if (!quiet) fitView(); }
+  }
+  $("modes").addEventListener("click", (e) => { const m = e.target.closest("[data-mode]")?.dataset.mode; if (m && m !== state.mode) setMode(m); });
+
+  let searchTimer = null;
+  $("list").addEventListener("input", (e) => {
+    if (e.target.id !== "pq") return;
+    state.hist.q = e.target.value;
+    state.hist.near = null;
+    drawNear();
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(renderPast, 250);
+  });
+  $("list").addEventListener("submit", (e) => { if (e.target.id === "pastSearch") e.preventDefault(); });
+  const nearLayer = L.layerGroup().addTo(map);
+  function drawNear() {
+    nearLayer.clearLayers();
+    const n = state.mode === "past" && state.hist.near;
+    if (n) L.circle([n.lat, n.lon], { radius: 80467, pane: "radii", color: "#4ad1ff", weight: 1.5, dashArray: "5 5", fillOpacity: 0.05, interactive: false }).addTo(nearLayer);
+  }
+  map.on("click", (e) => {
+    if (state.mode !== "past") return;
+    state.hist.near = { lat: e.latlng.lat, lon: e.latlng.lng };
+    drawNear();
+    renderPast();
+  });
+
   const TABS = [["forecast", "Forecast", tabForecast], ["guidance", "Guidance", tabGuidance], ["recon", "Recon", tabRecon], ["products", "Products", tabProducts]];
 
   function renderList() {
+    if (state.mode === "past") { renderPast(); return; }
     const list = systems().filter((s) => inBasin(s.basin));
     const areas = outlookAreas().filter((a) => inBasin(a.basin));
     const sel = state.selected;
@@ -475,6 +693,10 @@
   }
 
   $("list").addEventListener("click", (e) => {
+    const h = e.target.closest("[data-hstorm]");
+    if (h) { selectHist(h.dataset.hstorm, true); return; }
+    if (e.target.closest("[data-clearnear]")) { e.preventDefault(); state.hist.near = null; drawNear(); renderPast(); return; }
+    if (state.mode === "past") return;
     const tab = e.target.closest("[data-tab]");
     if (tab) { state.tab = tab.dataset.tab; renderList(); return; }
     const row = e.target.closest("[data-id]");
@@ -498,6 +720,7 @@
     if (!b) return;
     state.basin = b;
     document.querySelectorAll("#basins button").forEach((x) => x.setAttribute("aria-selected", x.dataset.basin === b));
+    if (state.mode === "past") { renderPast(); map.flyToBounds(BASIN_BOUNDS[b], { duration: 0.6 }); return; }
     const sel = systems().find((s) => s.id === state.selected);
     if (sel && !inBasin(sel.basin)) select(null);
     renderList();
@@ -509,6 +732,7 @@
     if (!k) return;
     state.on[k] = e.target.checked;
     if (k === "sat") loadSat(true);
+    else if (["windprob", "arrival", "surge"].includes(k)) drawNhcLayers();
     else drawAll();
   });
 
@@ -653,7 +877,7 @@
     });
   }
 
-  function drawAll() { drawOutlook(); drawStorms(); drawModels(); drawRecon(); }
+  function drawAll() { drawOutlook(); drawStorms(); drawModels(); drawRecon(); drawNhcLayers(); }
 
   function fitView() {
     const sel = systems().find((s) => s.id === state.selected);
@@ -707,7 +931,15 @@
     if (!state.selected && list.length && !hashId) state.selected = list[0].id;
     renderList();
     drawAll();
-    fitView();
+    if (!pastHash) fitView();
+    if (pastHash) {
+      // Open on that storm's season so it's in the list, selected.
+      state.basin = pastHash.startsWith("AL") ? "AL" : "ALL";
+      state.hist.q = pastHash.slice(-4);
+      document.querySelectorAll("#basins button").forEach((x) => x.setAttribute("aria-selected", x.dataset.basin === state.basin));
+      setMode("past", true);
+      selectHist(pastHash, true, true);
+    }
 
     setInterval(async () => {
       if (await loadData().catch(() => false)) {

@@ -50,6 +50,10 @@
   <div class="app">
     <aside class="side" aria-label="Tropical systems">
       <div class="side__head"><h1><span>Tropical</span>Weather</h1><time id="updated"></time></div>
+      <div class="tabs" role="tablist" aria-label="Mode" id="modes">
+        <button role="tab" data-mode="active" aria-selected="true">Active storms</button>
+        <button role="tab" data-mode="past" aria-selected="false">Past storms</button>
+      </div>
       <div class="tabs" role="tablist" aria-label="Basin" id="basins">
         <button role="tab" data-basin="ALL" aria-selected="true">All basins</button>
         <button role="tab" data-basin="AL" aria-selected="false">Atlantic</button>
@@ -68,7 +72,11 @@
           <label><input type="checkbox" data-layer="outlook" checked /> 7-day outlook</label>
           <label><input type="checkbox" data-layer="radii" /> Wind field</label>
           <label><input type="checkbox" data-layer="sat" checked /> Satellite</label>
+          <label><input type="checkbox" data-layer="windprob" /> Wind probabilities</label>
+          <label><input type="checkbox" data-layer="arrival" /> TS wind arrival</label>
+          <label><input type="checkbox" data-layer="surge" /> Peak storm surge</label>
         </div>
+        <div class="satpick" id="windkt" role="group" aria-label="Wind probability threshold"><span>Wind probability</span><button data-kt="34" aria-pressed="true">34 kt</button><button data-kt="50" aria-pressed="false">50 kt</button><button data-kt="64" aria-pressed="false">64 kt</button></div>
         <div class="satpick" id="satpick" role="group" aria-label="Satellite product">
           <button data-sat="ir" aria-pressed="true">Infrared</button>
           <button data-sat="vis" aria-pressed="false">Visible</button>
@@ -95,6 +103,6 @@
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="app.js"></script>
+  <script src="app.js?v=8"></script>
 </body>
 </html>

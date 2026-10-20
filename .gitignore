@@ -2,3 +2,4 @@ site/data/
 __pycache__/
 .claude/
 mockups/
+__pycache__/
