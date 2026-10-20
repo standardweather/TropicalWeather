@@ -4,16 +4,21 @@
  *   NHC tropical MapServer  cones, forecast/past tracks, watches & warnings, wind field, 7-day outlook areas
  *   NASA GIBS GOES tiles    IR / visible / GeoColor / air mass, 10-minute full-disk frames
  *   NHC map service images  wind-speed probabilities, arrival time of TS-force winds, peak storm surge (inundation)
+ *   WPC map service images  7-day rainfall forecast and day 1 excessive rainfall (flash flood) outlook
+ *   NASA GIBS GHRSST MUR    daily sea surface temperature
  * Built by build_hurdat.py from NOAA/NHC HURDAT2 into hurdat/atl.json and hurdat/pac.json:
  *   historical best tracks (Atlantic since 1851, Pacific since 1949) for the Past storms view
  * Collected every ~15 min by GitHub Actions into data/tropical.json (fetch_data.py):
- *   NHC CurrentStorms, ATCF best tracks + guidance, TCPOD, recon HDOBs + vortex messages, outlook text
+ *   NHC CurrentStorms, ATCF best tracks + guidance, TCPOD, recon HDOBs + vortex messages, outlook text,
+ *   NDBC buoy and coastal station observations
  */
 (() => {
   "use strict";
 
   const MS = "https://mapservices.weather.noaa.gov/tropical/rest/services/tropical/NHC_tropical_weather/MapServer";
   const GIBS = "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best";
+  const WPC_QPF = "https://mapservices.weather.noaa.gov/vector/rest/services/precip/wpc_qpf/MapServer";
+  const WPC_ERO = "https://mapservices.weather.noaa.gov/vector/rest/services/hazards/wpc_precip_hazards/MapServer";
   const SAT = {
     ir: { name: "IR", product: "ABI_Band13_Clean_Infrared", level: 6 },
     vis: { name: "Visible", product: "ABI_Band2_Red_Visible_1km", level: 7 },
@@ -85,7 +90,7 @@
     basin: "ALL",
     selected: null,
     tab: "forecast",
-    on: { cone: true, ww: true, models: true, past: true, recon: true, outlook: true, radii: false, sat: true, windprob: false, arrival: false, surge: false },
+    on: { cone: true, ww: true, models: true, past: true, recon: true, outlook: true, radii: false, sat: true, windprob: false, arrival: false, surge: false, rain: false, ero: false, sst: false, buoys: false },
     windKt: 34,
     mode: "active",
     hist: { data: {}, q: "", selected: null, near: null },
@@ -103,7 +108,7 @@
   const map = L.map("map", { zoomControl: false, minZoom: 2, maxZoom: 11, worldCopyJump: false }).fitBounds(BASIN_BOUNDS.ALL);
   L.control.zoom({ position: "topright" }).addTo(map);
   map.attributionControl.setPrefix("");
-  [["satW", 250], ["satE", 251], ["outlook", 380], ["cone", 400], ["radii", 410], ["lines", 420], ["recon", 600], ["points", 620], ["labels", 640]]
+  [["satW", 250], ["satE", 251], ["sst", 255], ["outlook", 380], ["cone", 400], ["radii", 410], ["lines", 420], ["recon", 600], ["points", 620], ["labels", 640]]
     .forEach(([n, z]) => { map.createPane(n).style.zIndex = z; });
   map.getPane("labels").style.pointerEvents = "none";
   L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}", { maxZoom: 16, attribution: "Esri" }).addTo(map);
@@ -116,6 +121,7 @@
     storms: L.layerGroup().addTo(map),   // cones, tracks, warnings — rebuilt on selection
     models: L.layerGroup().addTo(map),
     recon: L.layerGroup().addTo(map),
+    buoys: L.layerGroup().addTo(map),
     markers: L.layerGroup().addTo(map),
   };
 
@@ -458,44 +464,52 @@
       const nw = map.unproject([c.x * size.x, c.y * size.y], c.z);
       const se = map.unproject([(c.x + 1) * size.x, (c.y + 1) * size.y], c.z);
       const a = L.CRS.EPSG3857.project(nw), b = L.CRS.EPSG3857.project(se);
-      return `${MS}/export?bbox=${a.x},${b.y},${b.x},${a.y}&bboxSR=3857&imageSR=3857&size=${size.x},${size.y}&layers=show:${this.options.ids}&format=png32&transparent=true&dpi=96&f=image&_=${this.options.stamp}`;
+      return `${this.options.base}/export?bbox=${a.x},${b.y},${b.x},${a.y}&bboxSR=3857&imageSR=3857&size=${size.x},${size.y}&layers=show:${this.options.ids}&format=png32&transparent=true&dpi=96&f=image&_=${this.options.stamp}`;
     },
   });
   const nhcLayers = {};
   const NhcLegend = L.Control.extend({ options: { position: "bottomright" }, onAdd() { const d = L.DomUtil.create("div", "maplegend"); d.id = "nhcLegend"; return d; } });
   new NhcLegend().addTo(map);
+  // Image layers drawn by NOAA map services: NHC products for current storms, and WPC rainfall.
+  const EXPORT_KINDS = ["windprob", "arrival", "surge", "rain", "ero"];
+  const exportBase = (kind) => (kind === "rain" ? WPC_QPF : kind === "ero" ? WPC_ERO : MS);
   function nhcIds(kind) {
     const ids = state.layerIds || {};
     const bins = Object.keys(state.nhc);
     if (kind === "windprob") return [{ 34: 395, 50: 396, 64: 397 }[state.windKt]];
     if (kind === "arrival") return bins.map((b) => ids[`${b} Most Likely Arrival Time`]).filter((x) => x != null);
     if (kind === "surge") return bins.filter((b) => b.startsWith("AT")).map((b) => ids[`Image_Inun_${b}`]).filter((x) => x != null);
+    if (kind === "rain") return [11];   // QPF 168 Hour Day 1-7
+    if (kind === "ero") return [0];     // Excessive Rainfall Day 1
     return [];
   }
   function drawNhcLayers() {
-    for (const kind of ["windprob", "arrival", "surge"]) {
+    for (const kind of EXPORT_KINDS) {
       nhcLayers[kind]?.remove();
       delete nhcLayers[kind];
       const ids = nhcIds(kind);
       if (!state.on[kind] || state.mode !== "active" || !ids.length) continue;
-      nhcLayers[kind] = new NhcExport("", { ids: ids.join(","), stamp: Math.floor(Date.now() / 600000), pane: "radii", opacity: kind === "windprob" ? 0.6 : 0.85, attribution: "" }).addTo(map);
+      nhcLayers[kind] = new NhcExport("", { base: exportBase(kind), ids: ids.join(","), stamp: Math.floor(Date.now() / 600000), pane: "radii", opacity: kind === "windprob" || kind === "rain" ? 0.6 : 0.85, attribution: "" }).addTo(map);
     }
     drawNhcLegend();
   }
   // Legend swatches come from the map service too.
-  let nhcLegend = null;
+  const legends = {};
+  const legendFor = (base) => (legends[base] ||= fetch(`${base}/legend?f=json`).then((r) => r.json()).then((d) => Object.fromEntries(d.layers.map((l) => [l.layerId, l]))).catch(() => ({})));
   async function drawNhcLegend() {
     const el = $("nhcLegend");
     if (!el) return;
-    const want = ["windprob", "arrival", "surge"].filter((k) => state.on[k] && state.mode === "active");
-    if (!want.length) { el.innerHTML = ""; return; }
-    if (!nhcLegend) nhcLegend = await fetch(`${MS}/legend?f=json`).then((r) => r.json()).then((d) => Object.fromEntries(d.layers.map((l) => [l.layerId, l]))).catch(() => ({}));
-    const titles = { windprob: `Chance of ${state.windKt}-kt winds (5 days)`, arrival: "Most likely arrival of TS-force winds", surge: "Peak storm surge (ft above ground)" };
-    el.innerHTML = want.map((k) => {
+    const want = EXPORT_KINDS.filter((k) => state.on[k] && state.mode === "active");
+    const sst = state.on.sst ? `<h5 class="sub">Sea surface temperature (°C)</h5><div class="key"><span>Cooler</span><span style="display:inline-block;width:7rem;height:.55rem;border-radius:3px;vertical-align:middle;background:linear-gradient(90deg,#3b2aa0,#2f7fd1,#3fd0c8,#9be15d,#ffe14d,#ff8a2a,#d7301f)"></span><span>Warmer</span></div><p class="note" style="margin:.2rem 0 0">Hurricanes need about 26 °C or warmer. NASA GHRSST MUR, daily.</p>` : "";
+    if (!want.length) { el.innerHTML = sst; return; }
+    const lgs = Object.fromEntries(await Promise.all([...new Set(want.map(exportBase))].map(async (b) => [b, await legendFor(b)])));
+    const titles = { windprob: `Chance of ${state.windKt}-kt winds (5 days)`, arrival: "Most likely arrival of TS-force winds", surge: "Peak storm surge (ft above ground)", rain: "WPC rainfall forecast, 7 days (in)", ero: "Flash flood risk today (WPC)" };
+    el.innerHTML = sst + want.map((k) => {
       const ids = nhcIds(k);
       if (!ids.length) return `<h5 class="sub">${titles[k]}</h5><p class="note" style="margin:0">Not issued for current storms.</p>`;
-      const lg = nhcLegend[ids[0]];
-      return `<h5 class="sub">${titles[k]}</h5><div class="key">${(lg?.legend || []).slice(0, 11).map((x) => `<span><img alt="" src="data:${x.contentType};base64,${x.imageData}" width="14" height="14" style="vertical-align:-3px;margin-right:.3rem">${esc(x.label || "")}</span>`).join("")}</div>`;
+      const lg = lgs[exportBase(k)][ids[0]];
+      const items = (lg?.legend || []).filter((x) => x.label !== "0");
+      return `<h5 class="sub">${titles[k]}</h5><div class="key">${(k === "rain" ? items.slice().reverse() : items).slice(0, k === "rain" ? 18 : 11).map((x) => `<span><img alt="" src="data:${x.contentType};base64,${x.imageData}" width="14" height="14" style="vertical-align:-3px;margin-right:.3rem">${esc(x.label || "")}</span>`).join("")}</div>`;
     }).join("");
   }
   $("windkt").addEventListener("click", (e) => {
@@ -732,7 +746,9 @@
     if (!k) return;
     state.on[k] = e.target.checked;
     if (k === "sat") loadSat(true);
-    else if (["windprob", "arrival", "surge"].includes(k)) drawNhcLayers();
+    else if (EXPORT_KINDS.includes(k)) drawNhcLayers();
+    else if (k === "sst") drawSst();
+    else if (k === "buoys") drawBuoys();
     else drawAll();
   });
 
@@ -877,7 +893,39 @@
     });
   }
 
-  function drawAll() { drawOutlook(); drawStorms(); drawModels(); drawRecon(); drawNhcLayers(); }
+  function drawAll() { drawOutlook(); drawStorms(); drawModels(); drawRecon(); drawBuoys(); drawNhcLayers(); }
+
+  // —— Sea surface temperature (NASA GIBS, latest daily MUR analysis) ——————————————
+  let sstLayer = null;
+  function drawSst() {
+    sstLayer?.remove();
+    sstLayer = null;
+    if (state.on.sst) {
+      sstLayer = L.tileLayer(`${GIBS}/GHRSST_L4_MUR_Sea_Surface_Temperature/default/default/GoogleMapsCompatible_Level7/{z}/{y}/{x}.png`,
+        { pane: "sst", maxNativeZoom: 7, maxZoom: 11, opacity: 0.75, attribution: "GHRSST MUR via NASA GIBS" }).addTo(map);
+    }
+    drawNhcLegend();
+  }
+
+  // —— Buoys and coastal stations (NDBC, collected by fetch_data.py) ——————————————
+  const BUOY = "#9fe6b8";
+  function drawBuoys() {
+    layers.buoys.clearLayers();
+    if (!state.on.buoys || !state.data) return;
+    for (const [id, lat, lon, t, wdir, wspd, gust, wvht, pres, wtmp] of state.data.buoys || []) {
+      const c = wspd >= 64 ? ssColor(64) : wspd >= 34 ? ssColor(34) : BUOY;
+      L.circleMarker([lat, lon], { pane: "points", radius: wspd >= 34 ? 5 : 3.5, color: "#060818", weight: 1, fillColor: c, fillOpacity: 0.95 })
+        .bindTooltip(`${esc(id)}${wspd != null ? ` · ${wspd}${gust ? `G${gust}` : ""} kt` : ""}${pres ? ` · ${pres} mb` : ""}`, { className: "tw-tip", direction: "top" })
+        .bindPopup(popup(`NDBC ${id}`, [
+          ["Time", `${dayZ(t)} (${ago(t)})`],
+          ["Wind", wspd != null ? `${wdir != null ? `${compass(wdir)} ` : ""}${wspd} kt${gust ? `, gusts ${gust} kt` : ""}` : null],
+          ["Pressure", pres ? `${pres} mb` : null],
+          ["Waves", wvht != null ? `${wvht} ft` : null],
+          ["Water temp", wtmp != null ? `${wtmp} °C` : null],
+          ["Station", `<a href="https://www.ndbc.noaa.gov/station_page.php?station=${encodeURIComponent(id)}" target="_blank" rel="noopener">NDBC page</a>`],
+        ])).addTo(layers.buoys);
+    }
+  }
 
   function fitView() {
     const sel = systems().find((s) => s.id === state.selected);
