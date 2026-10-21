@@ -1200,7 +1200,13 @@
     if (!state.selected && list.length && !hashId) state.selected = list[0].id;
     renderList();
     drawAll();
-    if (!pastHash) fitView();
+    // ?loc=lat,lon (from the property profile and other pages): past storms near that place.
+    const locParam = new URLSearchParams(location.search).get("loc")?.match(/^(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)$/);
+    if (locParam && !pastHash) {
+      state.hist.near = { lat: +locParam[1], lon: +locParam[2] };
+      setMode("past", true);
+      map.setView([state.hist.near.lat, state.hist.near.lon], 7, { animate: false });
+    } else if (!pastHash) fitView();
     if (pastHash) {
       // Open on that storm's season so it's in the list, selected.
       state.basin = pastHash.startsWith("AL") ? "AL" : "ALL";
