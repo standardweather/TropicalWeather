@@ -559,14 +559,218 @@
       ${lf.length ? `<h5 class="sub">Landfalls</h5><table class="fc"><tbody>${lf.map((p) => `<tr><td>${ptLabel(p[0])}</td><td>${ll(p[1], p[2])}</td><td>${p[3]} kt · ${catOf(p[3])}</td></tr>`).join("")}</tbody></table>` : `<p class="note">No landfall in the record.</p>`}
       <details class="more"><summary>All ${st.pts.length} best-track points</summary><table class="fc" style="margin-top:.4rem"><thead><tr><th>Time</th><th>Position</th><th>Wind</th><th>Pressure</th></tr></thead><tbody>
         ${st.pts.map((p) => `<tr><td>${ptLabel(p[0])}<span class="dim"> ${esc(p[5])}</span></td><td>${ll(p[1], p[2])}</td><td>${p[3] ?? "—"}</td><td>${p[4] ?? "—"}</td></tr>`).join("")}</tbody></table></details>
+      ${wwHtml(st)}
       <p class="note">NOAA/NHC HURDAT2 best track. <a href="https://www.nhc.noaa.gov/data/tcr/" target="_blank" rel="noopener">Tropical Cyclone Reports ↗</a></p></div>`;
+  }
+
+  // —— Wind or water: when hurricane winds and the storm surge reached a place, for a past storm ————————————
+  // Wind is estimated hour by hour from the HURDAT2 best track: its maximum wind, radius of maximum wind and the
+  // 34/50/64-kt wind radii by quadrant (2004 on), interpolated between six-hourly fixes. Water comes from the nearest
+  // NOAA CO-OPS tide gauge (observed level, predicted tide, and the surge as the difference), and the ground height
+  // at the place from the USGS Elevation Point Query Service.
+  const COOPS = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter";
+  const NM_KM = 1.852;
+  state.ww = null;   // { key, status, wind, gauge, water, ground }
+
+  async function loadRadii(file) {
+    state.hist.radii ||= {};
+    if (!state.hist.radii[file]) state.hist.radii[file] = fetch(`hurdat/${file}-radii.json`).then((r) => r.json()).then((d) => d.radii).catch(() => ({}));
+    return state.hist.radii[file];
+  }
+
+  /** Estimated 1-minute sustained wind (kt) at distance rKm and bearing (degrees from the center) for one fix. */
+  function windAt(fix, rKm, brg) {
+    const v0 = fix.v;
+    if (v0 == null) return null;
+    const q = Math.floor((((brg % 360) + 360) % 360) / 90);   // 0 NE, 1 SE, 2 SW, 3 NW
+    const rad = (k) => (fix.radii && fix.radii[k * 4 + q] > 0 ? fix.radii[k * 4 + q] * NM_KM : null);
+    const rm = Math.max(8, Math.min(150, (fix.radii?.[12] > 0 ? fix.radii[12] : v0 >= 64 ? 20 : 35) * NM_KM));
+    if (rKm <= rm) return v0 * Math.max(0, rKm / rm);
+    const anchors = [[rm, v0]];
+    [[2, 64], [1, 50], [0, 34]].forEach(([k, kt]) => { const r = rad(k); if (r && kt < anchors[anchors.length - 1][1] && r > anchors[anchors.length - 1][0]) anchors.push([r, kt]); });
+    for (let i = 0; i + 1 < anchors.length; i++) {
+      const [r1, w1] = anchors[i], [r2, w2] = anchors[i + 1];
+      if (rKm <= r2) { const f = Math.log(rKm / r1) / Math.log(r2 / r1); return w1 + (w2 - w1) * f; }
+    }
+    const [rl, wl] = anchors[anchors.length - 1];
+    return wl * Math.pow(rl / rKm, anchors.length > 1 ? 0.75 : 0.5);
+  }
+
+  function windTimeline(st, radii, lat, lon) {
+    const fixes = st.pts.map((p, i) => ({ t: ptTime(p[0]), lat: p[1], lon: p[2], v: p[3], status: p[5], radii: radii?.[i] || null }));
+    const out = [];
+    for (let i = 0; i + 1 < fixes.length; i++) {
+      const a = fixes[i], b = fixes[i + 1];
+      for (let t = Math.ceil(a.t / 3600e3) * 3600e3; t < b.t || (i + 2 === fixes.length && t <= b.t); t += 3600e3) {
+        const f = (t - a.t) / Math.max(1, b.t - a.t);
+        const mix = (x, y) => (x == null || y == null ? x ?? y : x + (y - x) * f);
+        const fix = { v: mix(a.v, b.v), radii: a.radii && b.radii ? a.radii.map((x, k) => mix(x, b.radii[k])) : a.radii || b.radii };
+        const clat = mix(a.lat, b.lat), clon = mix(a.lon, b.lon);
+        const kx = 111.32 * Math.cos((lat * Math.PI) / 180), dx = (lon - clon) * kx, dy = (lat - clat) * 110.57;
+        const r = Math.hypot(dx, dy), brg = ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360;
+        out.push({ t, r, kt: windAt(fix, Math.max(1, r), brg), status: a.status });
+      }
+    }
+    return out;
+  }
+  const spanOf = (tl, kt) => { const on = tl.filter((h) => h.kt >= kt); return on.length ? { from: on[0].t, to: on[on.length - 1].t } : null; };
+
+  async function coopsSeries(id, product, begin, end, datum) {
+    const ymdHM = (ms) => { const d = new Date(ms); return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`; };
+    const u = `${COOPS}?product=${product}&station=${id}&begin_date=${encodeURIComponent(ymdHM(begin))}&end_date=${encodeURIComponent(ymdHM(end))}&datum=${datum}&units=english&time_zone=gmt&format=json&application=StandardWeather` + (product === "predictions" ? "&interval=6" : "");
+    const d = await (await fetch(u)).json();
+    const rows = d.data || d.predictions;
+    if (!rows) throw new Error(d.error?.message || "no data");
+    return rows.map((r) => ({ t: Date.parse(r.t.replace(" ", "T") + "Z"), v: parseFloat(r.v) })).filter((r) => Number.isFinite(r.v));
+  }
+
+  async function loadWindWater(st, place) {
+    const key = `${st.id}|${place.lat.toFixed(4)},${place.lon.toFixed(4)}`;
+    if (state.ww?.key === key) return;
+    const ww = state.ww = { key, status: "loading" };
+    const radii = (await loadRadii(histFile(st.basin)))[st.id];
+    if (state.ww !== ww) return;
+    ww.wind = windTimeline(st, radii, place.lat, place.lon);
+    ww.radii = !!radii;
+    ww.status = "ready";
+    renderPast();
+    const peak = ww.wind.reduce((m, h) => (!m || h.kt > m.kt ? h : m), null);
+    const ts = spanOf(ww.wind, 34);
+    const center = ts ? (ts.from + ts.to) / 2 : peak.t;
+    const begin = (ts ? ts.from : peak.t) - 18 * 3600e3, end = (ts ? ts.to : peak.t) + 18 * 3600e3;
+    // Ground height at the place (USGS 3DEP, feet NAVD88).
+    fetch(`https://epqs.nationalmap.gov/v1/json?x=${place.lon.toFixed(5)}&y=${place.lat.toFixed(5)}&units=Feet&wkid=4326&includeDate=false`).then((r) => r.json())
+      .then((d) => { const v = parseFloat(d.value); if (state.ww === ww && Number.isFinite(v) && v > -1000) { ww.ground = v; renderPast(); } }).catch(() => {});
+    // The nearest tide gauges within 60 miles with data for the storm.
+    if (st.year < 1996) { ww.water = { none: "Tide gauge data here starts in 1996." }; renderPast(); return; }
+    const gauges = await fetch("hurdat/coops.json").then((r) => r.json()).then((d) => d.stations).catch(() => []);
+    const near = gauges.map(([id, name, stt, la, lo]) => ({ id, name: `${name}${stt ? `, ${stt}` : ""}`, lat: la, lon: lo, km: haversine(place.lat, place.lon, la, lo) }))
+      .filter((g) => g.km <= 96.6).sort((a, b) => a.km - b.km).slice(0, 4);
+    for (const g of near) {
+      try {
+        const [obs, pred] = await Promise.all([coopsSeries(g.id, "water_level", begin, end, "MHHW"), coopsSeries(g.id, "predictions", begin, end, "MHHW").catch(() => [])]);
+        if (state.ww !== ww) return;
+        if (obs.length < 10) continue;
+        const predAt = new Map(pred.map((p) => [p.t, p.v]));
+        obs.forEach((o) => { const p = predAt.get(o.t); o.surge = p == null ? null : o.v - p; });
+        const top = obs.reduce((m, o) => (!m || o.v > m.v ? o : m), null);
+        const surge = obs.filter((o) => o.surge != null).reduce((m, o) => (!m || o.surge > m.surge ? o : m), null);
+        const navd = await coopsSeries(g.id, "water_level", top.t - 600e3, top.t + 600e3, "NAVD").then((r) => r.reduce((m, o) => (m == null || o.v > m ? o.v : m), null)).catch(() => null);
+        // A gauge that stops or skips readings mid-storm may have missed the true peak.
+        let gapAt = null;
+        for (let i = 1; i < obs.length; i++) if (obs[i].t - obs[i - 1].t > 3 * 3600e3) { gapAt = obs[i - 1].t; break; }
+        if (!gapAt && end - obs[obs.length - 1].t > 3 * 3600e3 && obs[obs.length - 1].t < Date.now() - 3 * 3600e3) gapAt = obs[obs.length - 1].t;
+        ww.water = { gauge: g, obs, top, surge, navd, gapAt, center };
+        break;
+      } catch { /* try the next gauge */ }
+    }
+    if (!ww.water) ww.water = { none: near.length ? "The nearest tide gauges have no water levels for this storm (gauges sometimes fail in a major surge)." : "No NOAA tide gauge within 60 miles." };
+    if (state.ww === ww) renderPast();
+  }
+  const haversine = (lat1, lon1, lat2, lon2) => {
+    const r = Math.PI / 180, a = Math.sin(((lat2 - lat1) * r) / 2) ** 2 + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin(((lon2 - lon1) * r) / 2) ** 2;
+    return 12742 * Math.asin(Math.sqrt(a));
+  };
+
+  function wwChart(ww) {
+    const tl = ww.wind, w = ww.water?.obs ? ww.water : null;
+    const ts = spanOf(tl, 34);
+    const t0 = (ts ? ts.from : tl[0].t) - 12 * 3600e3, t1 = (ts ? ts.to : tl[tl.length - 1].t) + 12 * 3600e3;
+    const hrs = tl.filter((h) => h.t >= t0 && h.t <= t1);
+    if (hrs.length < 2) return "";
+    const W = 336, H = 150, L0 = 28, R0 = 30, T0 = 8, B0 = 18;
+    const x = (t) => L0 + ((t - t0) / (t1 - t0)) * (W - L0 - R0);
+    const kmax = Math.max(70, Math.ceil(Math.max(...hrs.map((h) => h.kt || 0)) / 20) * 20);
+    const yk = (v) => T0 + (1 - v / kmax) * (H - T0 - B0);
+    const wv = w ? w.obs.filter((o) => o.t >= t0 && o.t <= t1) : [];
+    const lo = wv.length ? Math.floor(Math.min(0, ...wv.map((o) => o.v))) : 0, hi = wv.length ? Math.ceil(Math.max(2, ...wv.map((o) => o.v))) : 1;
+    const yw = (v) => T0 + (1 - (v - lo) / (hi - lo)) * (H - T0 - B0);
+    const mono = 'font-family="IBM Plex Mono, monospace" font-size="9" fill="rgba(255,255,255,.42)"';
+    let svg = "";
+    [34, 64].forEach((k) => { if (k <= kmax) svg += `<line x1="${L0}" x2="${W - R0}" y1="${yk(k)}" y2="${yk(k)}" stroke="rgba(255,255,255,.1)" stroke-dasharray="3 3"/><text x="${L0 - 4}" y="${yk(k) + 3}" text-anchor="end" ${mono}>${k}</text>`; });
+    svg += `<text x="${L0 - 4}" y="${yk(kmax) + 8}" text-anchor="end" ${mono}>kt</text>`;
+    if (wv.length) for (let v = lo; v <= hi; v += Math.max(1, Math.ceil((hi - lo) / 4))) svg += `<text x="${W - R0 + 4}" y="${yw(v) + 3}" ${mono} fill="#4ad1ff">${v}ft</text>`;
+    for (let t = Math.ceil(t0 / 21600e3) * 21600e3; t <= t1; t += 21600e3) {
+      const d = new Date(t);
+      svg += `<line x1="${x(t)}" x2="${x(t)}" y1="${T0}" y2="${H - B0}" stroke="rgba(255,255,255,.06)"/>`;
+      if (d.getUTCHours() % 12 === 0) svg += `<text x="${x(t)}" y="${H - 4}" text-anchor="middle" ${mono}>${d.getUTCHours() === 0 ? `${d.getUTCMonth() + 1}/${d.getUTCDate()}` : "12Z"}</text>`;
+    }
+    if (wv.length) svg += `<polyline fill="none" stroke="#4ad1ff" stroke-width="1.6" points="${wv.map((o) => `${x(o.t).toFixed(1)},${yw(o.v).toFixed(1)}`).join(" ")}"/>`;
+    svg += `<polyline fill="none" stroke="#ffbf47" stroke-width="2" points="${hrs.map((h) => `${x(h.t).toFixed(1)},${yk(h.kt || 0).toFixed(1)}`).join(" ")}"/>`;
+    return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Estimated wind and water level">${svg}</svg>
+      <p class="chart-key"><span style="color:#ffbf47">━</span> estimated sustained wind at the place (kt)${wv.length ? ` <span style="color:#4ad1ff">━</span> water level at the gauge (ft above MHHW)` : ""} · UTC</p>`;
+  }
+
+  function wwHtml(st) {
+    const place = state.hist.near;
+    if (!place) return `<h5 class="sub">Wind or water</h5><p class="note">Click the map or enter a place above to estimate when hurricane winds and the storm surge reached it.</p>`;
+    const ww = state.ww;
+    if (!ww || ww.status === "loading" || !ww.key.startsWith(`${st.id}|`)) return `<h5 class="sub">Wind or water</h5><p class="note">Working out the winds at ${ll(place.lat, place.lon)}…</p>`;
+    const tl = ww.wind;
+    const peak = tl.reduce((m, h) => (!m || h.kt > m.kt ? h : m), null);
+    const close = tl.reduce((m, h) => (!m || h.r < m.r ? h : m), null);
+    const ts = spanOf(tl, 34), hu = spanOf(tl, 64);
+    const when = (t) => `${dayZ(t)}`;
+    const dur = (s) => `${Math.round((s.to - s.from) / 3600e3) + 1} h`;
+    let html = `<h5 class="sub">Wind or water at ${esc(place.label || ll(place.lat, place.lon))}</h5>
+      <dl class="kv"><dt>Closest approach</dt><dd>${Math.round(close.r * 0.621)} mi at ${when(close.t)}</dd>
+        <dt>Peak wind (est.)</dt><dd>${Math.round(peak.kt)} kt · ${mph(peak.kt)} mph at ${when(peak.t)}</dd>
+        <dt>Tropical-storm winds</dt><dd>${ts ? `${when(ts.from)} – ${when(ts.to)} (${dur(ts)})` : "Not reached"}</dd>
+        <dt>Hurricane winds</dt><dd>${hu ? `${when(hu.from)} – ${when(hu.to)} (${dur(hu)})` : "Not reached"}</dd>`;
+    const w = ww.water;
+    if (!w) html += `<dt>Water</dt><dd>Loading the nearest tide gauge…</dd>`;
+    else if (w.none) html += `<dt>Water</dt><dd>${esc(w.none)}</dd>`;
+    else {
+      html += `<dt>Tide gauge</dt><dd>${esc(w.gauge.name)} · ${Math.round(w.gauge.km * 0.621)} mi · NOAA ${esc(w.gauge.id)}</dd>
+        <dt>Peak water</dt><dd>${w.top.v.toFixed(1)} ft above MHHW at ${when(w.top.t)}${w.navd != null ? ` (${w.navd.toFixed(1)} ft NAVD88)` : ""}</dd>
+        ${w.surge ? `<dt>Peak surge</dt><dd>${w.surge.surge.toFixed(1)} ft above the predicted tide at ${when(w.surge.t)}</dd>` : ""}
+        ${w.gapAt ? `<dt>Gauge record</dt><dd><b style="color:#ffbf47">Stopped reporting after ${when(w.gapAt)}</b>, so the true peak may have been higher</dd>` : ""}`;
+    }
+    if (ww.ground != null) html += `<dt>Ground here</dt><dd>${ww.ground.toFixed(1)} ft NAVD88 (USGS 3DEP)${w?.navd != null ? ` · the gauge's peak was ${Math.abs(w.navd - ww.ground).toFixed(1)} ft ${w.navd >= ww.ground ? "above" : "below"} it` : ""}</dd>`;
+    html += `</dl>`;
+    // Which came first.
+    if (w?.top && (hu || ts)) {
+      const s = hu || ts, label = hu ? "Hurricane-force" : "Tropical-storm-force";
+      const lead = Math.round((w.top.t - s.from) / 3600e3);
+      html += `<p class="note"><b>${label} winds reached the place about ${Math.abs(lead)} h ${lead >= 0 ? "before" : "after"} the ${w.gapAt ? "highest recorded water" : "water peaked"}</b> at the gauge${hu && w.top.t > hu.to ? `, and had dropped below hurricane force ${Math.round((w.top.t - hu.to) / 3600e3)} h before the peak` : ""}.</p>`;
+    }
+    html += wwChart(ww);
+    html += `<p class="note">Wind is a model estimate from the NHC best track (${ww.radii ? "with its wind radii" : "no wind radii before 2004, so a simple profile"}), as 1-minute sustained wind over open ground; buildings, trees and terrain lower it and gusts run higher.
+      Water is measured at the gauge, not at the place, and a surge can differ a lot over a few miles. A certified analysis would add surveyed high-water marks, USGS sensors and local observations.
+      <a href="/?${new URLSearchParams({ request: "report", place: place.label || `${place.lat.toFixed(4)}, ${place.lon.toFixed(4)}`, lat: place.lat.toFixed(4), lon: place.lon.toFixed(4), when: `${st.name} (${st.year})`, link: location.href })}#contact">Request a certified report</a></p>`;
+    return html;
+  }
+
+  /** Census Geocoder (JSONP; it sends no CORS headers) for a street address, or a typed "lat, lon". */
+  function geocode(text) {
+    const m = text.trim().match(/^(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)$/);
+    if (m) return Promise.resolve({ label: null, lat: +m[1], lon: +m[2] });
+    return new Promise((resolve, reject) => {
+      const cb = "twCensus" + Math.random().toString(36).slice(2);
+      const u = new URL("https://geocoding.geo.census.gov/geocoder/locations/onelineaddress");
+      u.searchParams.set("address", text);
+      u.searchParams.set("benchmark", "Public_AR_Current");
+      u.searchParams.set("format", "jsonp");
+      u.searchParams.set("callback", cb);
+      const script = document.createElement("script");
+      const timer = setTimeout(() => done(new Error("Address search timed out")), 12000);
+      function done(err, value) { clearTimeout(timer); delete window[cb]; script.remove(); err ? reject(err) : resolve(value); }
+      window[cb] = (data) => {
+        const hit = data?.result?.addressMatches?.[0];
+        hit ? done(null, { label: hit.matchedAddress, lat: hit.coordinates.y, lon: hit.coordinates.x }) : done(new Error("Address not found. Try a full street address or lat, lon."));
+      };
+      script.onerror = () => done(new Error("Address search failed"));
+      script.src = u.toString();
+      document.head.appendChild(script);
+    });
   }
 
   async function renderPast() {
     const box = $("list");
     if (!box.querySelector("#pq")) {
       box.innerHTML = `<form class="search" id="pastSearch"><input id="pq" placeholder="Name or year, e.g. Katrina or 2005" autocomplete="off" value="${esc(state.hist.q)}" /></form>
-        <p class="note" style="padding:0 1.25rem">Or click the map to list storms that passed within 50 miles.</p><div id="pastResults"><p class="empty">Loading the best-track archive…</p></div>`;
+        <form class="search" id="placeSearch" style="padding-top:.3rem"><input id="placeQ" placeholder="Address or lat, lon" autocomplete="off" value="${esc(state.hist.near?.label || "")}" style="text-transform:none" /><button class="btn btn--secondary">Find</button></form>
+        <p class="note" style="padding:0 1.25rem">Or click the map to list storms that passed within 50 miles, then pick one to see when its winds and surge reached the place.</p><div id="pastResults"><p class="empty">Loading the best-track archive…</p></div>`;
     }
     const all = await histStorms();
     const q = state.hist.q.trim().toLowerCase();
@@ -587,6 +791,8 @@
       heading = `${latest} season · ${list.length} storms`;
     }
     $("pastResults").innerHTML = `<h5 class="sub" style="padding:.6rem 1.25rem 0">${heading}</h5>` + (list.map(histRow).join("") || `<p class="empty">No storms found.</p>`);
+    const sel = state.hist.selected;
+    if (sel && state.hist.near && state.ww?.key !== `${sel.id}|${state.hist.near.lat.toFixed(4)},${state.hist.near.lon.toFixed(4)}`) loadWindWater(sel, state.hist.near);
   }
 
   // Distance (km) from a point to the nearest segment of a track (equirectangular, fine at these scales).
@@ -659,17 +865,32 @@
     clearTimeout(searchTimer);
     searchTimer = setTimeout(renderPast, 250);
   });
-  $("list").addEventListener("submit", (e) => { if (e.target.id === "pastSearch") e.preventDefault(); });
+  $("list").addEventListener("submit", async (e) => {
+    if (e.target.id === "pastSearch") { e.preventDefault(); return; }
+    if (e.target.id !== "placeSearch") return;
+    e.preventDefault();
+    try {
+      const hit = await geocode($("placeQ").value);
+      state.hist.near = hit;
+      drawNear();
+      map.setView([hit.lat, hit.lon], Math.max(map.getZoom(), 7));
+      if (state.hist.selected && nearestKm(state.hist.selected, hit.lat, hit.lon) > 80) state.hist.selected = null;
+      renderPast();
+    } catch (err) { $("pastResults").insertAdjacentHTML("afterbegin", `<p class="empty">${esc(err.message)}</p>`); }
+  });
   const nearLayer = L.layerGroup().addTo(map);
   function drawNear() {
     nearLayer.clearLayers();
     const n = state.mode === "past" && state.hist.near;
     if (n) L.circle([n.lat, n.lon], { radius: 80467, pane: "radii", color: "#4ad1ff", weight: 1.5, dashArray: "5 5", fillOpacity: 0.05, interactive: false }).addTo(nearLayer);
+    if (n) L.circleMarker([n.lat, n.lon], { pane: "points", radius: 6, color: "#fff", weight: 2, fillColor: "#4ad1ff", fillOpacity: 1, interactive: false }).addTo(nearLayer);
   }
   map.on("click", (e) => {
     if (state.mode !== "past") return;
     state.hist.near = { lat: e.latlng.lat, lon: e.latlng.lng };
+    if ($("placeQ")) $("placeQ").value = "";
     drawNear();
+    if (state.hist.selected && nearestKm(state.hist.selected, e.latlng.lat, e.latlng.lng) > 80) { state.hist.selected = null; drawHist(); }
     renderPast();
   });
 
@@ -979,7 +1200,13 @@
     if (!state.selected && list.length && !hashId) state.selected = list[0].id;
     renderList();
     drawAll();
-    if (!pastHash) fitView();
+    // ?loc=lat,lon (from the property profile and other pages): past storms near that place.
+    const locParam = new URLSearchParams(location.search).get("loc")?.match(/^(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)$/);
+    if (locParam && !pastHash) {
+      state.hist.near = { lat: +locParam[1], lon: +locParam[2] };
+      setMode("past", true);
+      map.setView([state.hist.near.lat, state.hist.near.lon], 7, { animate: false });
+    } else if (!pastHash) fitView();
     if (pastHash) {
       // Open on that storm's season so it's in the list, selected.
       state.basin = pastHash.startsWith("AL") ? "AL" : "ALL";

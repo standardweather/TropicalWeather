@@ -16,6 +16,12 @@ Live tropical cyclone map for [Standard Weather](https://standardweather.github.
 - Tropical weather outlook text — `nhc.noaa.gov/gtwo.xml`
 - Buoy and coastal station observations — `ndbc.noaa.gov/data/latest_obs`
 
+**Wind or water (Past storms)**
+- Pick a past storm and a place (map click, address or lat, lon) to see when tropical-storm and hurricane-force winds reached it, the estimated peak wind, and the closest approach — estimated hourly from the HURDAT2 best track and its wind radii (`site/hurdat/*-radii.json`)
+- The nearest NOAA CO-OPS tide gauge's observed water level, predicted tide and surge for the same hours (`api.tidesandcurrents.noaa.gov`, CORS-enabled; gauge list in `site/hurdat/coops.json`), with a flag when the gauge stopped reporting
+- Ground height at the place from the USGS Elevation Point Query Service, compared with the gauge's peak in NAVD88 when the gauge has that datum
+- `build_hurdat.py` writes the radii and gauge files along with the tracks
+
 The page uses the shared theme at `/css/site.css` from the `standardweather.github.io` repo.
 
 ## Local preview
