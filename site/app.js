@@ -1184,13 +1184,25 @@
     return changed;
   }
 
+  /** Past storms near ?loc=lat,lon; with &date=YYYY-MM-DD (from the case file), open the one nearest the place that week. */
+  function openPlace(m) {
+    state.hist.near = { lat: +m[1], lon: +m[2] };
+    setMode("past", true);
+    map.setView([state.hist.near.lat, state.hist.near.lon], 7, { animate: false });
+    const dateParam = new URLSearchParams(location.search).get("date");
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateParam || "")) openStormNear(state.hist.near, Date.parse(`${dateParam}T12:00:00Z`));
+  }
+
   async function init() {
     loadSat(true);
     setStatus("Loading tropical data…");
     const [dataOk, nhcOk] = await Promise.all([loadData().then(() => true, () => false), loadNhc().then(() => true, () => false)]);
+    const locParam = new URLSearchParams(location.search).get("loc")?.match(/^(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)$/);
     if (!dataOk) {
-      $("list").innerHTML = `<p class="empty">Couldn't load the latest data. Try again in a few minutes.</p>`;
       setStatus("Data unavailable");
+      // Past storms don't need the live data, so a link to them still opens.
+      if (locParam && !pastHash) return openPlace(locParam);
+      $("list").innerHTML = `<p class="empty">Couldn't load the latest data. Try again in a few minutes.</p>`;
       return;
     }
     setStatus(nhcOk ? "" : "NHC map service unavailable — cones and warnings not shown");
@@ -1201,12 +1213,8 @@
     renderList();
     drawAll();
     // ?loc=lat,lon (from the property profile and other pages): past storms near that place.
-    const locParam = new URLSearchParams(location.search).get("loc")?.match(/^(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)$/);
-    if (locParam && !pastHash) {
-      state.hist.near = { lat: +locParam[1], lon: +locParam[2] };
-      setMode("past", true);
-      map.setView([state.hist.near.lat, state.hist.near.lon], 7, { animate: false });
-    } else if (!pastHash) fitView();
+    if (locParam && !pastHash) openPlace(locParam);
+    else if (!pastHash) fitView();
     if (pastHash) {
       // Open on that storm's season so it's in the list, selected.
       state.basin = pastHash.startsWith("AL") ? "AL" : "ALL";
@@ -1225,6 +1233,33 @@
     setInterval(() => loadNhc().then(() => { setStatus(""); renderList(); drawAll(); }).catch(() => {}), 10 * 60000);
     setInterval(() => { if (!state.sat.timer) loadSat(false); renderUpdated(); }, 10 * 60000);
   }
+
+  // —— Case file: the home page's case file (/case.html) opens ?loc=…&date=… in a frame and reads wind or water from here ——
+  // The storm whose track came within 250 miles of the place, active within 3 days of the date; the closest wins.
+  async function openStormNear(place, t) {
+    const all = await histStorms();
+    const pick = all.filter((st) => ptTime(st.pts[0][0]) - 3 * 86_400_000 <= t && t <= ptTime(st.pts[st.pts.length - 1][0]) + 3 * 86_400_000)
+      .map((st) => ({ st, km: nearestKm(st, place.lat, place.lon) })).filter((x) => x.km <= 402).sort((a, b) => a.km - b.km)[0];
+    state.caseStorm = pick ? { id: pick.st.id, km: pick.km } : { none: true };
+    if (pick) await selectHist(pick.st.id, true, true);
+  }
+  window.SWCase = {
+    status() {
+      const c = state.caseStorm;
+      if (!c) return "loading";
+      if (c.none) return "none";
+      const ww = state.ww;
+      return ww?.status === "ready" && ww.water && ww.key.startsWith(`${c.id}|`) ? "ready" : "loading";
+    },
+    section() {
+      const st = state.hist.selected;
+      const div = document.createElement("div");
+      div.innerHTML = wwHtml(st);
+      div.querySelectorAll('a[href^="/?"]').forEach((a) => a.remove());
+      return { title: `TropicalWeather: ${st.name} (${st.year})`,
+        html: `<p>${esc(st.name)} (${st.year}, ${esc(st.id)}) passed about ${Math.round(state.caseStorm.km * 0.621)} miles from the place at its closest, with a peak intensity of ${st.peak ?? "—"} kt (${catOf(st.peak)}). Times are UTC.</p>${div.innerHTML}` };
+    },
+  };
 
   init();
 })();
