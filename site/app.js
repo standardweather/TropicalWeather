@@ -737,7 +737,7 @@
     html += wwChart(ww);
     html += `<p class="note">Wind is a model estimate from the NHC best track (${ww.radii ? "with its wind radii" : "no wind radii before 2004, so a simple profile"}), as 1-minute sustained wind over open ground; buildings, trees and terrain lower it and gusts run higher.
       Water is measured at the gauge, not at the place, and a surge can differ a lot over a few miles. A certified analysis would add surveyed high-water marks, USGS sensors and local observations.
-      <a href="/?${new URLSearchParams({ request: "report", place: place.label || `${place.lat.toFixed(4)}, ${place.lon.toFixed(4)}`, lat: place.lat.toFixed(4), lon: place.lon.toFixed(4), when: `${st.name} (${st.year})`, link: location.href })}#contact">Request a certified report</a></p>`;
+      <a href="/ForensicWeather/?${new URLSearchParams({ request: "report", place: place.label || `${place.lat.toFixed(4)}, ${place.lon.toFixed(4)}`, lat: place.lat.toFixed(4), lon: place.lon.toFixed(4), when: `${st.name} (${st.year})`, link: location.href })}#contact">Request a certified report</a></p>`;
     return html;
   }
 
