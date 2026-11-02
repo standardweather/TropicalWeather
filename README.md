@@ -16,6 +16,10 @@ Live tropical cyclone map for [Standard Weather](https://standardweather.github.
 - Tropical weather outlook text — `nhc.noaa.gov/gtwo.xml`
 - Buoy and coastal station observations — `ndbc.noaa.gov/data/latest_obs`
 
+**Past storms**
+- Search by name, year, range of years or decade, several at once separated by commas (e.g. `Katrina, Rita 2005`, `2004-2008`, `1950s`), and narrow to hurricanes, majors or landfalls
+- Tick storms (or "Plot all") to draw many tracks together across seasons, colored by storm or by intensity, with a tally of what's on the map; the URL (`#past-al122005,al092017/al122005`) shares the set and the open storm
+
 **Wind or water (Past storms)**
 - Pick a past storm and a place (map click, address or lat, lon) to see when tropical-storm and hurricane-force winds reached it, the estimated peak wind, and the closest approach — estimated hourly from the HURDAT2 best track and its wind radii (`site/hurdat/*-radii.json`)
 - The nearest NOAA CO-OPS tide gauge's observed water level, predicted tide and surge for the same hours (`api.tidesandcurrents.noaa.gov`, CORS-enabled; gauge list in `site/hurdat/coops.json`), with a flag when the gauge stopped reporting

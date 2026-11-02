@@ -26,6 +26,31 @@
   <style>
     /* TropicalWeather-only pieces; the shared console layout is in /css/console.css. */
     dl.kv { grid-template-columns: 7.5rem 1fr; }
+    /* Past storms: a tick box on each row to plot several storms at once, and the tray of what's plotted. */
+    .hsys { display: grid; grid-template-columns: auto minmax(0, 1fr); }
+    .hsys > .detail { grid-column: 1 / -1; }
+    .hpick { display: flex; align-items: center; margin: 0; padding: 0 0 0 1.25rem; cursor: pointer; }
+    .hpick input { appearance: auto; -webkit-appearance: auto; width: 0.95rem; height: 0.95rem; min-height: 0; margin: 0; padding: 0; box-shadow: none; border: 0; background: none; flex: none; cursor: pointer; }
+    .hsys > .sys__row { padding-left: 0.8rem; }
+    .hsys.sel > .hpick { background: rgba(74, 209, 255, 0.06); box-shadow: inset 3px 0 0 var(--accent); }
+    .hsys.sel > .sys__row { box-shadow: none; }
+    #histFilter { padding-top: 0.45rem; }
+    .plotted { margin: 0.6rem 1.25rem 0.2rem; padding: 0.7rem 0.8rem; border: 1px solid var(--rule); border-radius: 8px; background: rgba(255, 255, 255, 0.02); font-size: 0.8rem; }
+    .plotted__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.2rem 0.6rem; }
+    .plotted__head b { color: #fff; font-weight: 600; }
+    .plotted .dim { color: var(--text3); }
+    .plotted__acts { margin-left: auto; display: flex; gap: 0.8rem; }
+    .plotted__acts a { text-decoration: none; }
+    .plotted__tally { margin: 0.3rem 0 0; color: var(--text2); max-width: none; }
+    .plotted .satpick { margin-top: 0.45rem; }
+    .plotted__chips { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.55rem; max-height: 8.5rem; overflow: auto; }
+    .pchip { display: inline-flex; align-items: center; border: 1px solid var(--rule); border-radius: 999px; font-size: 0.76rem; }
+    .pchip.sel { border-color: rgba(74, 209, 255, 0.55); background: rgba(74, 209, 255, 0.1); }
+    .pchip button { all: unset; cursor: pointer; padding: 0.15rem 0.3rem 0.15rem 0.55rem; color: var(--text); white-space: nowrap; }
+    .pchip button + button { padding: 0.15rem 0.5rem 0.15rem 0.2rem; color: var(--text3); }
+    .pchip button + button:hover { color: #fff; }
+    .pchip button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 999px; }
+    .pchip i { display: inline-block; width: 0.6rem; height: 0.6rem; border-radius: 50%; margin-right: 0.35rem; vertical-align: -0.02rem; }
   </style>
 </head>
 <body class="console">
@@ -117,6 +142,6 @@
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="app.js?v=13"></script>
+  <script src="app.js?v=14"></script>
 </body>
 </html>

@@ -93,7 +93,8 @@
     on: { cone: true, ww: true, models: true, past: true, recon: true, outlook: true, radii: false, sat: true, windprob: false, arrival: false, surge: false, rain: false, ero: false, sst: false, buoys: false },
     windKt: 34,
     mode: "active",
-    hist: { data: {}, q: "", selected: null, near: null },
+    // picked: storms plotted together (ids, in the order added); selected: the one open in the sidebar.
+    hist: { data: {}, q: "", selected: null, near: null, picked: [], colorBy: "storm", filter: "all" },
     groupsOn: Object.fromEntries(Object.entries(MODEL_GROUPS).map(([k, v]) => [k, v.on])),
     sat: { kind: "ir", times: [], layers: [], idx: 0, timer: null, opacity: 0.85 },
     fitted: false,
@@ -101,7 +102,14 @@
 
   // Restore selection from the URL (#ep212026) so a view can be shared.
   const hashId = location.hash.slice(1).toLowerCase();
-  const pastHash = /^past-(al|ep|cp)\d{6}$/.test(hashId) ? hashId.slice(5).toUpperCase() : null;
+  // #past-al122005 opens one past storm; #past-al122005,al182005,al252005/al122005 plots several (and opens the one after "/").
+  const pastHash = (() => {
+    const m = hashId.match(/^past-((?:(?:al|ep|cp)\d{6},?)*)(?:\/((?:al|ep|cp)\d{6})?)?$/);
+    if (!m || (!m[1] && !m[2])) return null;
+    const ids = m[1].split(",").filter(Boolean).map((x) => x.toUpperCase());
+    if (!hashId.includes("/") && ids.length === 1) return { picked: [], focus: ids[0] };   // the original one-storm link
+    return { picked: [...new Set(ids)], focus: m[2]?.toUpperCase() || null };
+  })();
   if (/^(al|ep|cp)\d{6}$/.test(hashId)) state.selected = hashId;
 
   // —— Map ————————————————————————————————————————————————————————
@@ -537,6 +545,38 @@
     const sets = await Promise.all(files.map(loadHurdat));
     return sets.flatMap((d) => d.storms).filter((st) => state.basin === "ALL" || st.basin === state.basin);
   }
+  // Any past storm by id, whatever basin the list is showing (plotted storms stay plotted across basin tabs).
+  const histIndex = {};
+  async function histById(id) {
+    const file = id.startsWith("AL") ? "atl" : "pac";
+    if (!histIndex[file]) { const d = await loadHurdat(file); histIndex[file] = new Map(d.storms.map((st) => [st.id, st])); }
+    return histIndex[file].get(id) || null;
+  }
+  const histPicked = () => Promise.all(state.hist.picked.map(histById)).then((l) => l.filter(Boolean));
+
+  // Up to 300 storms on the map at once; more than that is a smear and slows the page.
+  const MAX_PLOT = 300;
+  // One color per plotted storm, picked to stay apart from each other on the dark basemap.
+  const PLOT_COLORS = ["#4ad1ff", "#ff7aa8", "#ffd84a", "#7ee08a", "#c9a0ff", "#ff9548", "#5ef2c9", "#ff5a5a", "#8fa8ff", "#e6e07a", "#ffb3e6", "#a9f05a"];
+  const plotColor = (id) => { const i = state.hist.picked.indexOf(id); return PLOT_COLORS[(i < 0 ? state.hist.picked.length : i) % PLOT_COLORS.length]; };
+  const HIST_FILTERS = [["all", "All", () => true], ["hu", "Hurricanes", (st) => st.peak >= 64], ["major", "Major (Cat 3+)", (st) => st.peak >= 96], ["landfall", "Landfall", (st) => st.landfall]];
+  const shortName = (st) => `${st.name} ’${String(st.year).slice(2)}`;
+
+  /** The search box: comma-separated terms, each a name, a year, a range of years ("2004-2008", "1950s"), or a name and years ("Ivan 2004"). */
+  function histQuery(q) {
+    const terms = q.split(/[,;]+/).map((t) => t.trim()).filter(Boolean).map((t) => {
+      let from = null, to = null;
+      const yr = (a, b) => { from = Math.min(a, from ?? a); to = Math.max(b, to ?? b); return " "; };
+      let name = t.replace(/\b(\d{4})\s*(?:-|–|—|to|through)\s*(\d{4}|\d{2})\b/i, (_, a, b) => yr(+a, b.length === 2 ? +(a.slice(0, 2) + b) : +b))
+        .replace(/\b(\d{3})0s\b/, (_, d) => yr(+d * 10, +d * 10 + 9))
+        .replace(/\b(\d{4})\b/g, (_, a) => yr(+a, +a))
+        .trim().toLowerCase();
+      if (from != null && from > to) [from, to] = [to, from];
+      return { name, from, to };
+    });
+    const years = terms.length && terms.every((t) => !t.name);
+    return { terms, years, match: (st) => terms.some((t) => (!t.name || st.name.toLowerCase().includes(t.name)) && (t.from == null || (st.year >= t.from && st.year <= t.to))) };
+  }
   const ptTime = (n) => { const s2 = String(n); return Date.UTC(+s2.slice(0, 4), +s2.slice(4, 6) - 1, +s2.slice(6, 8), +s2.slice(8, 10), +s2.slice(10, 12)); };
   const ptLabel = (n) => { const d = new Date(ptTime(n)); return `${d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })} ${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}Z`; };
   const STATUS = { HU: "Hurricane", TS: "Tropical storm", TD: "Tropical depression", EX: "Extratropical", SD: "Subtropical depression", SS: "Subtropical storm", LO: "Low", WV: "Wave", DB: "Disturbance" };
@@ -544,8 +584,9 @@
 
   function histRow(st) {
     const sel = state.hist.selected?.id === st.id;
+    const on = state.hist.picked.includes(st.id);
     const first = st.pts[0], last = st.pts[st.pts.length - 1];
-    return `<div class="sys${sel ? " sel" : ""}"><button class="sys__row" data-hstorm="${esc(st.id)}">
+    return `<div class="sys hsys${sel ? " sel" : ""}${on ? " on" : ""}"><label class="hpick" title="Keep on the map with other storms"><input type="checkbox" data-hpick="${esc(st.id)}"${on ? " checked" : ""} style="accent-color:${on && state.hist.colorBy === "storm" ? plotColor(st.id) : "var(--accent)"}" aria-label="Plot ${esc(st.name)} ${st.year}" /></label><button class="sys__row" data-hstorm="${esc(st.id)}">
         ${glyph(st.peak, 24)}
         <span class="sys__name">${esc(st.name)}<small>${esc(st.id)} · ${ptLabel(first[0]).replace(/ \d{4}Z$/, "")} – ${ptLabel(last[0]).replace(/, \d{4} \d{4}Z$/, "")}${st.landfall ? " · landfall" : ""}${st.near != null ? ` · ${Math.round(st.near * 0.621)} mi away` : ""}</small></span>
         <span class="sys__nums"><b>${st.peak ?? "—"}</b> kt<br>${st.minp ? `${st.minp} mb` : "—"}</span></button>${sel ? histDetail(st) : ""}</div>`;
@@ -768,31 +809,64 @@
   async function renderPast() {
     const box = $("list");
     if (!box.querySelector("#pq")) {
-      box.innerHTML = `<form class="search" id="pastSearch"><input id="pq" placeholder="Name or year, e.g. Katrina or 2005" autocomplete="off" value="${esc(state.hist.q)}" /></form>
+      box.innerHTML = `<form class="search" id="pastSearch"><input id="pq" placeholder="Names or years, e.g. Katrina, 2004-2008" autocomplete="off" value="${esc(state.hist.q)}" /></form>
         <form class="search" id="placeSearch" style="padding-top:.3rem"><input id="placeQ" placeholder="Address or lat, lon" autocomplete="off" value="${esc(state.hist.near?.label || "")}" style="text-transform:none" /><button class="btn btn--secondary">Find</button></form>
-        <p class="note" style="padding:0 1.25rem">Or click the map to list storms that passed within 50 miles, then pick one to see when its winds and surge reached the place.</p><div id="pastResults"><p class="empty">Loading the best-track archive…</p></div>`;
+        <div class="chips" id="histFilter" role="group" aria-label="Show">${HIST_FILTERS.map(([k, t]) => `<button data-hfilter="${k}" aria-pressed="${state.hist.filter === k}">${t}</button>`).join("")}</div>
+        <p class="note" style="padding:0 1.25rem">Tick storms to plot several at once, across any years. Click the map to list storms that passed within 50 miles, then pick one to see when its winds and surge reached the place.</p><div id="plotted"></div><div id="pastResults"><p class="empty">Loading the best-track archive…</p></div>`;
     }
-    const all = await histStorms();
-    const q = state.hist.q.trim().toLowerCase();
+    document.querySelectorAll("#histFilter button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.hfilter === state.hist.filter));
+    const keep = HIST_FILTERS.find(([k]) => k === state.hist.filter)[2];
+    const all = (await histStorms()).filter(keep);
+    renderPlotted();
+    const q = state.hist.q.trim();
+    const hq = histQuery(q);
     let list, heading;
     if (state.hist.near) {
       const { lat, lon } = state.hist.near;
       list = all.map((st) => ({ ...st, near: nearestKm(st, lat, lon) })).filter((st) => st.near <= 80).sort((a, b) => b.year - a.year || a.near - b.near);
       heading = `${list.length} storms within 50 miles of ${ll(lat, lon)} <a href="#" data-clearnear="1">clear</a>`;
-    } else if (/^\d{4}$/.test(q)) {
-      list = all.filter((st) => st.year === +q).sort((a, b) => a.pts[0][0] - b.pts[0][0]);
-      heading = `${list.length} storms in ${q}`;
+    } else if (q && hq.years) {
+      list = all.filter(hq.match).sort((a, b) => a.pts[0][0] - b.pts[0][0]);
+      const t = hq.terms, one = t.length === 1 && t[0].from === t[0].to;
+      heading = `${list.length} storms in ${one ? t[0].from : esc(q)}`;
     } else if (q) {
-      list = all.filter((st) => st.name.toLowerCase().includes(q)).slice(0, 80);
-      heading = `${list.length} storms named “${esc(state.hist.q)}”`;
+      list = all.filter(hq.match).sort((a, b) => b.year - a.year || a.pts[0][0] - b.pts[0][0]);
+      heading = `${list.length} storms matching “${esc(q)}”`;
     } else {
       const latest = Math.max(...all.map((st) => st.year));
       list = all.filter((st) => st.year === latest).sort((a, b) => a.pts[0][0] - b.pts[0][0]);
       heading = `${latest} season · ${list.length} storms`;
     }
-    $("pastResults").innerHTML = `<h5 class="sub" style="padding:.6rem 1.25rem 0">${heading}</h5>` + (list.map(histRow).join("") || `<p class="empty">No storms found.</p>`);
+    state.hist.list = list.map((st) => st.id);
+    if (list.length > 1) {
+      const allOn = list.every((st) => state.hist.picked.includes(st.id));
+      heading += ` · <a href="#" data-plotall="${allOn ? "off" : "on"}">${allOn ? "Remove these from the map" : `Plot ${list.length > MAX_PLOT ? `first ${MAX_PLOT}` : "all"}`}</a>`;
+    }
+    const shown = list.slice(0, 400);
+    $("pastResults").innerHTML = `<h5 class="sub" style="padding:.6rem 1.25rem 0">${heading}</h5>` + (shown.map(histRow).join("") || `<p class="empty">No storms found.</p>`)
+      + (list.length > shown.length ? `<p class="empty">Showing the first ${shown.length}. Narrow the years to see the rest.</p>` : "");
     const sel = state.hist.selected;
     if (sel && state.hist.near && state.ww?.key !== `${sel.id}|${state.hist.near.lat.toFixed(4)},${state.hist.near.lon.toFixed(4)}`) loadWindWater(sel, state.hist.near);
+  }
+
+  /** The storms on the map: a chip each, how to color them, and a tally across the seasons. */
+  async function renderPlotted() {
+    const box = $("plotted");
+    if (!box) return;
+    const sts = await histPicked();
+    if (!sts.length) { box.innerHTML = ""; return; }
+    const years = [...new Set(sts.map((st) => st.year))].sort((a, b) => a - b);
+    const n = (f) => sts.filter(f).length;
+    const yearText = years.length === 1 ? years[0] : years.length <= 4 ? years.join(", ") : `${years.length} seasons, ${years[0]}–${years[years.length - 1]}`;
+    const byStorm = state.hist.colorBy === "storm";
+    box.innerHTML = `<div class="plotted">
+      <div class="plotted__head"><b>${sts.length} on the map</b><span class="dim">${yearText}</span>
+        <span class="plotted__acts"><a href="#" data-plotfit="1">Zoom to all</a><a href="#" data-plotclear="1">Clear</a></span></div>
+      <p class="plotted__tally">${n((st) => st.peak >= 64)} hurricanes · ${n((st) => st.peak >= 96)} major · ${n((st) => st.landfall)} with landfall${sts.length > 1 ? ` · strongest ${esc(sts.reduce((a, b) => ((b.peak ?? -1) > (a.peak ?? -1) ? b : a)).name)}` : ""}</p>
+      <div class="satpick" role="group" aria-label="Color tracks by"><span>Color by</span><button data-colorby="storm" aria-pressed="${byStorm}">Storm</button><button data-colorby="intensity" aria-pressed="${!byStorm}">Intensity</button></div>
+      ${byStorm ? "" : `<div class="key">${SS.slice().reverse().map(([, c, l]) => `<span><i style="background:${c}"></i>${l === "TS" || l === "TD" ? l : `Cat ${l}`}</span>`).join("")}</div>`}
+      <div class="plotted__chips">${sts.map((st) => `<span class="pchip${state.hist.selected?.id === st.id ? " sel" : ""}"><button data-hstorm="${esc(st.id)}" title="${esc(st.id)} · ${st.peak ?? "—"} kt"><i style="background:${byStorm ? plotColor(st.id) : ssColor(st.peak)}"></i>${esc(st.name)} ${st.year}</button><button data-hpick="${esc(st.id)}" aria-label="Remove ${esc(st.name)} ${st.year} from the map">×</button></span>`).join("")}</div>
+    </div>`;
   }
 
   // Distance (km) from a point to the nearest segment of a track (equirectangular, fine at these scales).
@@ -810,27 +884,61 @@
     return best;
   }
 
-  function drawHist() {
+  // Canvas, since a few seasons at once is thousands of track segments.
+  const histLines = L.canvas({ pane: "lines", tolerance: 6 });
+  const histPoints = L.canvas({ pane: "points", tolerance: 3 });
+  let drawSeq = 0;
+  async function drawHist() {
+    const seq = ++drawSeq;
+    const focus = state.hist.selected;
+    const sts = await histPicked();
+    if (seq !== drawSeq) return;
+    if (focus && !sts.some((st) => st.id === focus.id)) sts.push(focus);
     layers.hist.clearLayers();
-    const st = state.hist.selected;
-    if (!st) return;
-    for (let i = 0; i + 1 < st.pts.length; i++) {
-      const a = st.pts[i], b = st.pts[i + 1];
-      L.polyline([[a[1], a[2]], [b[1], b[2]]], { pane: "lines", color: ssColor(a[3]), weight: 3, opacity: /EX|LO|WV|DB/.test(a[5]) ? 0.45 : 0.95, dashArray: /EX|LO|WV|DB/.test(a[5]) ? "4 4" : null, interactive: false }).addTo(layers.hist);
+    const many = sts.length > 12, byStorm = state.hist.colorBy === "storm";
+    // The open storm draws on top, full strength; the rest step back while one is open.
+    sts.sort((a, b) => (a.id === focus?.id) - (b.id === focus?.id));
+    for (const st of sts) {
+      const isFocus = st.id === focus?.id;
+      const dim = focus && !isFocus ? 0.45 : 1;
+      const color = (p) => (byStorm && state.hist.picked.includes(st.id) ? plotColor(st.id) : ssColor(p[3]));
+      const tip = `${st.name} ${st.year} · peak ${st.peak ?? "—"} kt (${catOf(st.peak)})${st.landfall ? " · landfall" : ""}`;
+      for (let i = 0; i + 1 < st.pts.length; i++) {
+        const a = st.pts[i], b = st.pts[i + 1], weak = /EX|LO|WV|DB/.test(a[5]);
+        const seg = L.polyline([[a[1], a[2]], [b[1], b[2]]], { renderer: histLines, color: color(a), weight: isFocus ? 3.2 : many ? 1.6 : 2.4, opacity: (weak ? 0.45 : 0.95) * dim, dashArray: weak ? "4 4" : null })
+          .bindTooltip(tip, { className: "tw-tip", sticky: true }).addTo(layers.hist);
+        seg.on("click", (e) => { L.DomEvent.stopPropagation(e); selectHist(st.id); });
+      }
+      const showPts = isFocus || !many;
+      st.pts.forEach((p) => {
+        const lf = p[6] === "L";
+        if (!showPts && !lf) return;
+        L.circleMarker([p[1], p[2]], { renderer: histPoints, radius: isFocus ? (lf ? 6 : 3.5) : lf ? 4 : 2.5, color: lf ? "#fff" : "#0b0f26", weight: lf ? (isFocus ? 2 : 1.4) : 1, fillColor: color(p), fillOpacity: dim, opacity: dim })
+          .bindTooltip(`${sts.length > 1 ? `${esc(st.name)} ${st.year} · ` : ""}${ptLabel(p[0])} · ${STATUS[p[5]] || p[5]} · ${p[3] ?? "—"} kt${p[4] ? ` · ${p[4]} mb` : ""}${lf ? " · landfall" : ""}`, { className: "tw-tip" })
+          .on("click", (e) => { L.DomEvent.stopPropagation(e); selectHist(st.id); })
+          .addTo(layers.hist);
+      });
+      // Name each track at its peak when there are few enough to read.
+      if (sts.length > 1 && (sts.length <= 10 || isFocus)) {
+        const pk = st.pts.reduce((m, p) => ((p[3] ?? -1) > (m[3] ?? -1) ? p : m), st.pts[0]);
+        L.marker([pk[1], pk[2]], { icon: L.divIcon({ className: "", iconSize: [0, 0] }), interactive: false, keyboard: false })
+          .bindTooltip(shortName(st), { permanent: true, direction: "right", offset: [6, 0], className: "tw-label", pane: "labels", opacity: dim })
+          .addTo(layers.hist);
+      }
     }
-    st.pts.forEach((p) => {
-      const lf = p[6] === "L";
-      L.circleMarker([p[1], p[2]], { pane: "points", radius: lf ? 6 : 3.5, color: lf ? "#fff" : "#0b0f26", weight: lf ? 2 : 1, fillColor: ssColor(p[3]), fillOpacity: 1 })
-        .bindTooltip(`${ptLabel(p[0])} · ${STATUS[p[5]] || p[5]} · ${p[3] ?? "—"} kt${p[4] ? ` · ${p[4]} mb` : ""}${lf ? " · landfall" : ""}`, { className: "tw-tip" })
-        .addTo(layers.hist);
-    });
+  }
+
+  function histHash() {
+    const { picked, selected } = state.hist;
+    const f = selected?.id.toLowerCase();
+    const h = !picked.length ? (f ? `#past-${f}` : "") : `#past-${picked.join(",").toLowerCase()}/${f || ""}`;
+    history.replaceState(null, "", h || location.pathname + location.search);
   }
 
   async function selectHist(id, fly, instant) {
-    const all = await histStorms();
-    const st = all.find((x) => x.id === id) || null;
+    const st = await histById(id);
     state.hist.selected = state.hist.selected?.id === id ? null : st;
-    history.replaceState(null, "", state.hist.selected ? `#past-${id}` : location.pathname + location.search);
+    histHash();
     drawHist();
     await renderPast();
     document.querySelector("#pastResults .sys.sel")?.scrollIntoView({ block: "nearest" });
@@ -839,6 +947,22 @@
       // Opening a shared link: no animation, since the archive is still parsing and could strand it mid-zoom.
       instant ? map.fitBounds(b, { maxZoom: 6, animate: false }) : map.flyToBounds(b, { maxZoom: 6, duration: 0.6 });
     }
+  }
+
+  /** Add or remove storms from the map. */
+  async function setPicked(ids, on) {
+    const p = state.hist.picked;
+    if (on) for (const id of ids) { if (!p.includes(id) && p.length < MAX_PLOT) p.push(id); }
+    else state.hist.picked = p.filter((id) => !ids.includes(id));
+    histHash();
+    drawHist();
+    await renderPast();
+  }
+  async function fitPicked(instant) {
+    const sts = await histPicked();
+    if (!sts.length) return;
+    const b = L.latLngBounds(sts.flatMap((st) => st.pts.map((p) => [p[1], p[2]]))).pad(0.08);
+    instant ? map.fitBounds(b, { maxZoom: 6, animate: false }) : map.flyToBounds(b, { maxZoom: 6, duration: 0.6 });
   }
 
   function setMode(m, quiet) {
@@ -852,7 +976,7 @@
     if (m === "past") clearSat(); else if (state.on.sat) loadSat(true);
     $("list").innerHTML = "";
     drawNhcLayers();
-    if (m === "past") renderPast(); else { history.replaceState(null, "", state.selected ? `#${state.selected}` : location.pathname); renderList(); if (!quiet) fitView(); }
+    if (m === "past") { histHash(); drawHist(); renderPast(); } else { history.replaceState(null, "", state.selected ? `#${state.selected}` : location.pathname); renderList(); if (!quiet) fitView(); }
   }
   $("modes").addEventListener("click", (e) => { const m = e.target.closest("[data-mode]")?.dataset.mode; if (m && m !== state.mode) setMode(m); });
 
@@ -930,6 +1054,22 @@
   $("list").addEventListener("click", (e) => {
     const h = e.target.closest("[data-hstorm]");
     if (h) { selectHist(h.dataset.hstorm, true); return; }
+    const pk = e.target.closest("button[data-hpick]");
+    if (pk) { setPicked([pk.dataset.hpick], false); return; }
+    const all = e.target.closest("[data-plotall]");
+    if (all) {
+      e.preventDefault();
+      const ids = state.hist.list || [];
+      if (all.dataset.plotall === "on") setPicked(ids, true).then(() => fitPicked());
+      else setPicked(ids, false);
+      return;
+    }
+    if (e.target.closest("[data-plotfit]")) { e.preventDefault(); fitPicked(); return; }
+    if (e.target.closest("[data-plotclear]")) { e.preventDefault(); setPicked([...state.hist.picked], false); return; }
+    const cb = e.target.closest("[data-colorby]");
+    if (cb) { state.hist.colorBy = cb.dataset.colorby; drawHist(); renderPast(); return; }
+    const hf = e.target.closest("[data-hfilter]");
+    if (hf) { state.hist.filter = hf.dataset.hfilter; renderPast(); return; }
     if (e.target.closest("[data-clearnear]")) { e.preventDefault(); state.hist.near = null; drawNear(); renderPast(); return; }
     if (state.mode === "past") return;
     const tab = e.target.closest("[data-tab]");
@@ -943,6 +1083,7 @@
     }
   });
   $("list").addEventListener("change", (e) => {
+    if (e.target.dataset?.hpick) { setPicked([e.target.dataset.hpick], e.target.checked); return; }
     const g = e.target.dataset?.group;
     if (!g) return;
     state.groupsOn[g] = e.target.checked;
@@ -1193,6 +1334,20 @@
     if (/^\d{4}-\d{2}-\d{2}$/.test(dateParam || "")) openStormNear(state.hist.near, Date.parse(`${dateParam}T12:00:00Z`));
   }
 
+  /** Open a shared #past-… link: the seasons it covers in the list, its storms on the map, and the open one selected. */
+  async function openPastHash() {
+    const { picked, focus } = pastHash;
+    const ids = [...picked, ...(focus ? [focus] : [])];
+    state.basin = ids.every((id) => id.startsWith("AL")) ? "AL" : "ALL";
+    const years = [...new Set(ids.map((id) => +id.slice(-4)))].sort((a, b) => a - b);
+    state.hist.q = years.length <= 4 ? years.join(", ") : `${years[0]}-${years[years.length - 1]}`;
+    state.hist.picked = picked.slice(0, MAX_PLOT);
+    document.querySelectorAll("#basins button").forEach((x) => x.setAttribute("aria-selected", x.dataset.basin === state.basin));
+    setMode("past", true);
+    if (focus) await selectHist(focus, true, true);
+    else { drawHist(); await fitPicked(true); }
+  }
+
   async function init() {
     loadSat(true);
     setStatus("Loading tropical data…");
@@ -1201,7 +1356,8 @@
     if (!dataOk) {
       setStatus("Data unavailable");
       // Past storms don't need the live data, so a link to them still opens.
-      if (locParam && !pastHash) return openPlace(locParam);
+      if (pastHash) return openPastHash();
+      if (locParam) return openPlace(locParam);
       $("list").innerHTML = `<p class="empty">Couldn't load the latest data. Try again in a few minutes.</p>`;
       return;
     }
@@ -1215,14 +1371,7 @@
     // ?loc=lat,lon (from the property profile and other pages): past storms near that place.
     if (locParam && !pastHash) openPlace(locParam);
     else if (!pastHash) fitView();
-    if (pastHash) {
-      // Open on that storm's season so it's in the list, selected.
-      state.basin = pastHash.startsWith("AL") ? "AL" : "ALL";
-      state.hist.q = pastHash.slice(-4);
-      document.querySelectorAll("#basins button").forEach((x) => x.setAttribute("aria-selected", x.dataset.basin === state.basin));
-      setMode("past", true);
-      selectHist(pastHash, true, true);
-    }
+    if (pastHash) openPastHash();
 
     setInterval(async () => {
       if (await loadData().catch(() => false)) {
