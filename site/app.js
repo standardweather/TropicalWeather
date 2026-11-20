@@ -331,6 +331,13 @@
     return list.sort((a, b) => (a.kind === b.kind ? (b.intensity || 0) - (a.intensity || 0) : a.kind === "storm" ? -1 : 1));
   }
 
+  // A paragraph that opens an outlook area: a short first line ending in a colon, such as
+  // "Offshore of the Southeast U.S. Coast:", but not the basin line "For the North Atlantic...:".
+  const isAreaHead = (para) => {
+    const first = (para || "").split("\n")[0].trim();
+    return /:$/.test(first) && first.length <= 90 && !/^For the /i.test(first);
+  };
+
   // 7-day outlook areas, named from the outlook text where the 7-day chance matches.
   function outlookAreas() {
     const feats = state.gtwo?.areas?.features || [];
@@ -340,9 +347,14 @@
       const basin = /atl/i.test(p.basin || "") ? "AL" : /cent/i.test(p.basin || "") ? "CP" : "EP";
       const text = (texts.find((o) => o.basin === basin) || {}).text || "";
       const pct = String(p.prob7day || "").replace("%", "");
-      const para = text.split(/\n\s*\n/).find((x) => new RegExp(`7 days\\.\\.\\.\\w+\\.\\.\\.(near )?${pct} percent`).test(x));
-      const title = para ? para.split("\n")[0].replace(/[:.]\s*$/, "").trim() : "Area of interest";
-      return { id: `area${i}`, basin, title, p, feature: f, text: para || "" };
+      const paras = text.split(/\n\s*\n/);
+      const at = paras.findIndex((x) => new RegExp(`7 days\\.\\.\\.\\w+\\.\\.\\.(near )?${pct} percent`).test(x));
+      // An area's text can run over several paragraphs; its name is the "Place name:" line that starts the first.
+      let from = at;
+      while (from > 0 && !isAreaHead(paras[from]) && !/Formation chance/i.test(paras[from - 1])) from--;   // stop at the previous area
+      const head = at >= 0 && isAreaHead(paras[from]) ? paras[from].split("\n")[0] : "";
+      const title = head ? head.replace(/[:.]\s*$/, "").trim() : "Area of interest";
+      return { id: `area${i}`, basin, title, p, feature: f, text: at >= 0 ? paras.slice(from, at + 1).join("\n\n") : "" };
     });
   }
 
