@@ -51,6 +51,11 @@
     .pchip button + button:hover { color: #fff; }
     .pchip button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 999px; }
     .pchip i { display: inline-block; width: 0.6rem; height: 0.6rem; border-radius: 50%; margin-right: 0.35rem; vertical-align: -0.02rem; }
+    /* site.css widens the phone nav links by the page gutter on both sides, which in the console layout
+       pushes them past the right edge and makes the whole page scroll sideways. */
+    @media (max-width: 640px) {
+      .console .site-nav__links { width: auto; margin: 0; padding: 0; }
+    }
   </style>
 </head>
 <body class="console">
