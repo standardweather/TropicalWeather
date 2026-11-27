@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TropicalWeather | Standard Weather</title>
   <meta name="description" content="TropicalWeather — live tropical cyclone map: NHC advisories and cones, ATCF model guidance, TCPOD aircraft tasking, recon observations and GOES satellite." />
-  <meta name="theme-color" content="#070914" />
+  <meta name="theme-color" content="#e9edeb" />
   <link rel="canonical" href="https://standardweather.net/TropicalWeather/" />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://standardweather.net/TropicalWeather/" />
@@ -14,15 +14,15 @@
   <meta property="og:image" content="https://standardweather.net/logo.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="icon" type="image/png" sizes="64x64" href="/assets/favicon-64.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="/assets/icon-192.png" />
   <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
-  <meta name="color-scheme" content="dark" />
+  <meta name="color-scheme" content="light" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <!-- Shared theme and console layout from the main site (standardweather.github.io repo). -->
-  <link rel="stylesheet" href="/css/site.css?v=20261024a" />
-  <link rel="stylesheet" href="/css/console.css?v=2" />
+  <link rel="stylesheet" href="/css/site.css?v=20261127" />
+  <link rel="stylesheet" href="/css/console.css?v=3" />
   <style>
     /* TropicalWeather-only pieces; the shared console layout is in /css/console.css. */
     dl.kv { grid-template-columns: 7.5rem 1fr; }
@@ -32,12 +32,12 @@
     .hpick { display: flex; align-items: center; margin: 0; padding: 0 0 0 1.25rem; cursor: pointer; }
     .hpick input { appearance: auto; -webkit-appearance: auto; width: 0.95rem; height: 0.95rem; min-height: 0; margin: 0; padding: 0; box-shadow: none; border: 0; background: none; flex: none; cursor: pointer; }
     .hsys > .sys__row { padding-left: 0.8rem; }
-    .hsys.sel > .hpick { background: rgba(74, 209, 255, 0.06); box-shadow: inset 3px 0 0 var(--accent); }
+    .hsys.sel > .hpick { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
     .hsys.sel > .sys__row { box-shadow: none; }
     #histFilter { padding-top: 0.45rem; }
-    .plotted { margin: 0.6rem 1.25rem 0.2rem; padding: 0.7rem 0.8rem; border: 1px solid var(--rule); border-radius: 8px; background: rgba(255, 255, 255, 0.02); font-size: 0.8rem; }
+    .plotted { margin: 0.6rem 1.25rem 0.2rem; padding: 0.7rem 0.8rem; border: 1px solid var(--rule); border-radius: 6px; background: rgba(255, 255, 255, 0.02); font-size: 0.8rem; }
     .plotted__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.2rem 0.6rem; }
-    .plotted__head b { color: #fff; font-weight: 600; }
+    .plotted__head b { color: var(--ink); font-weight: 600; }
     .plotted .dim { color: var(--text3); }
     .plotted__acts { margin-left: auto; display: flex; gap: 0.8rem; }
     .plotted__acts a { text-decoration: none; }
@@ -45,10 +45,10 @@
     .plotted .satpick { margin-top: 0.45rem; }
     .plotted__chips { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.55rem; max-height: 8.5rem; overflow: auto; }
     .pchip { display: inline-flex; align-items: center; border: 1px solid var(--rule); border-radius: 999px; font-size: 0.76rem; }
-    .pchip.sel { border-color: rgba(74, 209, 255, 0.55); background: rgba(74, 209, 255, 0.1); }
+    .pchip.sel { border-color: var(--accent); background: var(--accent-soft); }
     .pchip button { all: unset; cursor: pointer; padding: 0.15rem 0.3rem 0.15rem 0.55rem; color: var(--text); white-space: nowrap; }
     .pchip button + button { padding: 0.15rem 0.5rem 0.15rem 0.2rem; color: var(--text3); }
-    .pchip button + button:hover { color: #fff; }
+    .pchip button + button:hover { color: var(--ink); }
     .pchip button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 999px; }
     .pchip i { display: inline-block; width: 0.6rem; height: 0.6rem; border-radius: 50%; margin-right: 0.35rem; vertical-align: -0.02rem; }
     /* site.css widens the phone nav links by the page gutter on both sides, which in the console layout
